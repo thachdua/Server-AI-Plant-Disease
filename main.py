@@ -109,11 +109,11 @@ async def predict(selected_plant: str = Form(...), file: UploadFile = File(...))
         image = Image.open(io.BytesIO(contents)).convert('RGB')
         image = image.resize((224, 224))
 
-        img_array = np.array(image) / 255.0
+        img_array = np.array(image, dtype=np.float32) / 255.0
         img_array = np.expand_dims(img_array, axis=0)
 
         # 🔥 Đổi cách gọi predict để tiết kiệm hàng trăm MB RAM
-        predictions = model(img_array, training=False)[0].numpy()
+        predictions = model.predict_on_batch(img_array)[0]
 
         valid_indices = [
             i for i, name in enumerate(CLASS_NAMES)

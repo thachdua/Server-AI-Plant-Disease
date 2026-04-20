@@ -1,7 +1,7 @@
 import os
 import io
 import requests
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from supabase import create_client, Client
 import psycopg2
 from datetime import datetime
@@ -27,15 +27,24 @@ DB_CONFIG = {
 }
 
 # --- 2. HÀM LƯU DATABASE ---
-def save_to_db(plant_name, disease_name, confidence, image_url):
+def save_to_db(plant_name, disease_name, confidence, image_url, created_by=None):
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor()
-        query = """
-        INSERT INTO history (plant_name, disease_name, confidence, image_url, created_at)
-        VALUES (%s, %s, %s, %s, %s)
-        """
-        cur.execute(query, (plant_name, disease_name, confidence, image_url, datetime.now()))
+        # Prefer inserting created_by (if you added the column). Fallback to old schema if needed.
+        try:
+            query = """
+            INSERT INTO history (plant_name, disease_name, confidence, image_url, created_at, created_by)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """
+            cur.execute(query, (plant_name, disease_name, confidence, image_url, datetime.now(), created_by))
+        except Exception:
+            conn.rollback()
+            query = """
+            INSERT INTO history (plant_name, disease_name, confidence, image_url, created_at)
+            VALUES (%s, %s, %s, %s, %s)
+            """
+            cur.execute(query, (plant_name, disease_name, confidence, image_url, datetime.now()))
         conn.commit()
         cur.close()
         conn.close()
@@ -43,13 +52,46 @@ def save_to_db(plant_name, disease_name, confidence, image_url):
     except Exception as e:
         print(f"❌ Lỗi lưu DB: {e}")
 
+
+def extract_bearer_token(request: Request):
+    auth = request.headers.get("authorization") or request.headers.get("Authorization")
+    if not auth:
+        return None
+    parts = auth.split(" ", 1)
+    if len(parts) != 2:
+        return None
+    scheme, token = parts[0].strip(), parts[1].strip()
+    if scheme.lower() != "bearer" or not token:
+        return None
+    return token
+
+
+def get_user_id_from_supabase(access_token: str):
+    """Best-effort: validate access token and return user id."""
+    try:
+        r = requests.get(
+            f"{SUPABASE_URL}/auth/v1/user",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "apikey": SUPABASE_KEY,
+                "Accept": "application/json",
+            },
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        return data.get("id")
+    except Exception:
+        return None
+
 @app.get("/")
 def home():
     return {"message": "Render Bridge is Online", "target": "Hugging Face Space"}
 
 # --- 3. API CHÍNH ---
 @app.post("/predict")
-async def predict(selected_plant: str = Form(...), file: UploadFile = File(...)):
+async def predict(request: Request, selected_plant: str = Form(...), file: UploadFile = File(...)):
     try:
         # 1. Đọc file ảnh
         contents = await file.read()
@@ -134,7 +176,9 @@ async def predict(selected_plant: str = Form(...), file: UploadFile = File(...))
 
         # 5. Lưu vào Database
         # DB column is typically numeric/double precision → store number (0..100), not "xx.xx%"
-        save_to_db(predicted_plant, disease_name, confidence_percent_value, image_url)
+        access_token = extract_bearer_token(request)
+        created_by = get_user_id_from_supabase(access_token) if access_token else None
+        save_to_db(predicted_plant, disease_name, confidence_percent_value, image_url, created_by=created_by)
 
         # 6. Trả kết quả cuối cùng về cho iOS App
         return {

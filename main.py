@@ -77,17 +77,43 @@ async def predict(selected_plant: str = Form(...), file: UploadFile = File(...))
         )
         image_url = supabase.storage.from_("plant-images").get_public_url(file_name)
 
-        # 4. Lưu vào Database
+        # 4. Chuẩn hoá kết quả từ Hugging Face
+        #    Lưu ý: trước đây API đang luôn trả plant = selected_plant (input),
+        #    khiến app thấy "Tomato" hoài nếu UI gửi mặc định Tomato.
+        predicted_plant = result.get("plant") or selected_plant
         disease_name = result.get("disease")
-        confidence = result.get("confidence")
-        save_to_db(selected_plant, disease_name, confidence, image_url)
 
-        # 5. Trả kết quả cuối cùng về cho iOS App
+        raw_confidence = result.get("confidence")
+        confidence_value = None
+        if isinstance(raw_confidence, (int, float)):
+            confidence_value = float(raw_confidence)
+        elif isinstance(raw_confidence, str):
+            # chấp nhận "0.87", "87", "87%" ...
+            s = raw_confidence.strip().replace("%", "")
+            try:
+                confidence_value = float(s)
+            except Exception:
+                confidence_value = None
+
+        # chuẩn hoá về chuỗi phần trăm
+        # - nếu model trả [0..1] thì đổi sang %
+        # - nếu đã là [0..100] thì giữ nguyên
+        confidence_percent_str = None
+        if confidence_value is not None:
+            if 0.0 <= confidence_value <= 1.0:
+                confidence_percent_str = f"{confidence_value * 100:.2f}%"
+            else:
+                confidence_percent_str = f"{confidence_value:.2f}%"
+
+        # 5. Lưu vào Database
+        save_to_db(predicted_plant, disease_name, confidence_percent_str, image_url)
+
+        # 6. Trả kết quả cuối cùng về cho iOS App
         return {
             "status": "success",
-            "plant": selected_plant,
+            "plant": predicted_plant,
             "disease": disease_name,
-            "confidence": f"{confidence:.2f}%",
+            "confidence": confidence_percent_str,
             "image_url": image_url
         }
 

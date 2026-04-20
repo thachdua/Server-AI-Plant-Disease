@@ -1,7 +1,16 @@
 import os
 import io
+import gc # Thêm thư viện dọn rác RAM
 import numpy as np
+
+# Tắt bớt log rác của TensorFlow trước khi load
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 import tensorflow as tf
+
+# Ép TensorFlow chạy 1 luồng để không bị quá 512MB RAM trên Render
+tf.config.threading.set_inter_op_parallelism_threads(1)
+tf.config.threading.set_intra_op_parallelism_threads(1)
+
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from PIL import Image
 from supabase import create_client, Client
@@ -16,13 +25,13 @@ SUPABASE_KEY = "sb_publishable_gW6BTa8IWvVjO6Rbe-OGxQ_WgD6knWz"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- 2. DATABASE CONFIG (🔥 ĐÃ FIX) ---
+# --- 2. DATABASE CONFIG (🔥 ĐÃ FIX CHO RENDER POOLER) ---
 DB_CONFIG = {
-    "host": "db.wxmmfmvyefruyknymvdm.supabase.co",  # ✅ direct DB
+    "host": "aws-1-ap-southeast-1.pooler.supabase.com",  # Dùng host Pooler
     "database": "postgres",
-    "user": "postgres",
-    "password": "Nguyenyeuloc@123",  # ✅ password thật của bạn
-    "port": 5432,
+    "user": "postgres.wxmmfmvyefruyknymvdm", # Bắt buộc có phần đuôi
+    "password": os.environ.get("DB_PASSWORD", "Nguyenyeuloc@123"), # Tự động lấy trên Render, nếu test ở máy thì dùng pass thật
+    "port": 6543, # Cổng 6543 của Pooler
     "sslmode": "require"
 }
 
@@ -49,7 +58,7 @@ def save_to_db(plant_name, disease_name, confidence, image_url):
         cur.close()
         conn.close()
 
-        print("✅ ĐÃ LƯU DATABASE")
+        print("✅ ĐÃ LƯU DATABASE THÀNH CÔNG")
 
     except Exception as e:
         print(f"❌ Lỗi Database: {e}")
@@ -103,7 +112,8 @@ async def predict(selected_plant: str = Form(...), file: UploadFile = File(...))
         img_array = np.array(image) / 255.0
         img_array = np.expand_dims(img_array, axis=0)
 
-        predictions = model.predict(img_array)[0]
+        # 🔥 Đổi cách gọi predict để tiết kiệm hàng trăm MB RAM
+        predictions = model(img_array, training=False)[0].numpy()
 
         valid_indices = [
             i for i, name in enumerate(CLASS_NAMES)
@@ -118,6 +128,11 @@ async def predict(selected_plant: str = Form(...), file: UploadFile = File(...))
 
         disease_full = CLASS_NAMES[top1_idx].replace('___', ' - ').replace('_', ' ').title()
         confidence = float(valid_probs[top1_idx] * 100)
+
+        # --- Dọn dẹp RAM lập tức ---
+        del img_array
+        del image
+        gc.collect() 
 
         # --- Upload ảnh ---
         file_name = f"{datetime.now().timestamp()}.jpg"
@@ -146,7 +161,6 @@ async def predict(selected_plant: str = Form(...), file: UploadFile = File(...))
 # --- 7. RUN ---
 if __name__ == "__main__":
     import uvicorn
-    import os # Nhớ đảm bảo đã có import os ở đầu file
     # Lấy port từ Render cấp, nếu chạy local thì mặc định là 8000
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)

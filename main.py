@@ -80,8 +80,32 @@ async def predict(selected_plant: str = Form(...), file: UploadFile = File(...))
         # 4. Chuẩn hoá kết quả từ Hugging Face
         #    Lưu ý: trước đây API đang luôn trả plant = selected_plant (input),
         #    khiến app thấy "Tomato" hoài nếu UI gửi mặc định Tomato.
-        predicted_plant = result.get("plant") or selected_plant
         disease_name = result.get("disease")
+
+        def infer_plant_from_disease_label(label: str | None) -> str | None:
+            if not isinstance(label, str):
+                return None
+            # common formats:
+            # - "Apple___healthy"
+            # - "Tomato___Late_blight"
+            # - "Apple healthy" (fallback)
+            if "___" in label:
+                plant_part = label.split("___", 1)[0].strip()
+                return plant_part or None
+            if "_" in label:
+                # if model returns "Apple_healthy" (single underscore)
+                plant_part = label.split("_", 1)[0].strip()
+                return plant_part or None
+            if " " in label:
+                plant_part = label.split(" ", 1)[0].strip()
+                return plant_part or None
+            return None
+
+        predicted_plant = (
+            result.get("plant")
+            or infer_plant_from_disease_label(disease_name)
+            or selected_plant
+        )
 
         raw_confidence = result.get("confidence")
         confidence_value = None

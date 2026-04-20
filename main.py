@@ -123,14 +123,18 @@ async def predict(selected_plant: str = Form(...), file: UploadFile = File(...))
         # - nếu model trả [0..1] thì đổi sang %
         # - nếu đã là [0..100] thì giữ nguyên
         confidence_percent_str = None
+        confidence_percent_value = None
         if confidence_value is not None:
             if 0.0 <= confidence_value <= 1.0:
-                confidence_percent_str = f"{confidence_value * 100:.2f}%"
+                confidence_percent_value = confidence_value * 100.0
+                confidence_percent_str = f"{confidence_percent_value:.2f}%"
             else:
-                confidence_percent_str = f"{confidence_value:.2f}%"
+                confidence_percent_value = confidence_value
+                confidence_percent_str = f"{confidence_percent_value:.2f}%"
 
         # 5. Lưu vào Database
-        save_to_db(predicted_plant, disease_name, confidence_percent_str, image_url)
+        # DB column is typically numeric/double precision → store number (0..100), not "xx.xx%"
+        save_to_db(predicted_plant, disease_name, confidence_percent_value, image_url)
 
         # 6. Trả kết quả cuối cùng về cho iOS App
         return {

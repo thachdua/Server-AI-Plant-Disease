@@ -278,9 +278,8 @@ def weather(lat: float, lng: float):
     if cached is not None:
         return cached
 
-    # NOTE: One Call 3.0 often requires a paid subscription.
-    # For free-tier keys, use the legacy 2.5 endpoint.
-    url = "https://api.openweathermap.org/data/2.5/onecall"
+    # One Call API 3.0 (requires subscription / enabled key).
+    url = "https://api.openweathermap.org/data/3.0/onecall"
     r = requests.get(
         url,
         params={
@@ -336,6 +335,58 @@ def weather(lat: float, lng: float):
     }
 
     cache_set(cache_key, out, ttl_seconds=300)
+    return out
+
+
+@app.get("/weather/overview")
+def weather_overview(lat: float, lng: float):
+    """
+    Returns human-friendly overview + advice from OpenWeather One Call 3.0 overview endpoint.
+    """
+    if not OPENWEATHER_API_KEY:
+        raise HTTPException(status_code=500, detail="Missing OPENWEATHER_API_KEY")
+
+    lat_key = round(lat, 3)
+    lng_key = round(lng, 3)
+    cache_key = f"weather_overview|{lat_key}|{lng_key}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    url = "https://api.openweathermap.org/data/3.0/onecall/overview"
+    r = requests.get(
+        url,
+        params={
+            "lat": lat,
+            "lon": lng,
+            "appid": OPENWEATHER_API_KEY,
+            "units": "metric",
+            "lang": "vi",
+        },
+        timeout=12,
+    )
+    if r.status_code != 200:
+        try:
+            body = r.text
+        except Exception:
+            body = ""
+        raise HTTPException(status_code=502, detail=f"OpenWeather overview error: {r.status_code} {body}")
+
+    data = r.json()
+    overview_text = None
+    if isinstance(data, dict):
+        # OpenWeather may return different keys depending on version/locale.
+        # Common candidates: 'weather_overview', 'overview'
+        overview_text = data.get("weather_overview") or data.get("overview") or data.get("summary")
+    out = {
+        "status": "success",
+        "lat": lat,
+        "lng": lng,
+        "overview": data,
+        "overview_text": overview_text,
+    }
+    # cache longer; overview changes slower
+    cache_set(cache_key, out, ttl_seconds=900)
     return out
 
 if __name__ == "__main__":

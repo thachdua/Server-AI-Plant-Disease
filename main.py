@@ -3,6 +3,8 @@ import io
 import requests
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from pydantic import BaseModel
+from typing import Optional
+import time
 from supabase import create_client, Client
 import psycopg2
 from datetime import datetime
@@ -16,6 +18,24 @@ HF_API_URL = "https://thachdua-plantdiseasedectect.hf.space/predict"
 SUPABASE_URL = "https://wxmmfmvyefruyknymvdm.supabase.co"
 SUPABASE_KEY = "sb_publishable_gW6BTa8IWvVjO6Rbe-OGxQ_WgD6knWz"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY", "")
+
+# --- Simple in-memory cache (per instance) ---
+_cache = {}  # key -> (expires_at_epoch, value)
+
+def cache_get(key: str):
+    item = _cache.get(key)
+    if not item:
+        return None
+    exp, val = item
+    if time.time() > exp:
+        _cache.pop(key, None)
+        return None
+    return val
+
+def cache_set(key: str, val, ttl_seconds: int):
+    _cache[key] = (time.time() + ttl_seconds, val)
 
 # Config DB dùng Pooler (Cổng 6543) cho ổn định trên Cloud
 DB_CONFIG = {
@@ -89,6 +109,40 @@ def get_user_id_from_supabase(access_token: str):
 @app.get("/")
 def home():
     return {"message": "Render Bridge is Online", "target": "Hugging Face Space"}
+
+# --- Outbreak map (public read) ---
+@app.get("/outbreaks")
+def outbreaks(
+    disease: Optional[str] = None,
+    severity: Optional[int] = None,
+    since: Optional[str] = None,
+    limit: int = 500
+):
+    """
+    Returns outbreak points from Supabase table `public.outbreak_cases`.
+    Filters:
+    - disease: ilike match (pass full string or pattern)
+    - severity: 1..5
+    - since: ISO timestamp (reported_at >= since)
+    """
+    cache_key = f"outbreaks|d={disease}|sev={severity}|since={since}|l={limit}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return {"status": "success", "items": cached}
+
+    q = supabase.table("outbreak_cases").select("id,lat,lng,disease,severity,reported_at,note,source")
+    if disease:
+        q = q.ilike("disease", disease)
+    if severity is not None:
+        q = q.eq("severity", severity)
+    if since:
+        q = q.gte("reported_at", since)
+    q = q.order("reported_at", desc=True).limit(min(max(limit, 1), 1000))
+
+    resp = q.execute()
+    items = resp.data or []
+    cache_set(cache_key, items, ttl_seconds=20)
+    return {"status": "success", "items": items}
 
 # --- 3. API CHÍNH ---
 @app.post("/predict")
@@ -209,6 +263,73 @@ async def save_history(req: SaveHistoryRequest, request: Request):
 
     save_to_db(req.plant, req.disease, req.confidence, req.image_url, created_by=created_by)
     return {"status": "success"}
+
+
+# --- Weather (OpenWeather) ---
+@app.get("/weather")
+def weather(lat: float, lng: float):
+    if not OPENWEATHER_API_KEY:
+        raise HTTPException(status_code=500, detail="Missing OPENWEATHER_API_KEY")
+
+    lat_key = round(lat, 3)
+    lng_key = round(lng, 3)
+    cache_key = f"weather|{lat_key}|{lng_key}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    url = "https://api.openweathermap.org/data/3.0/onecall"
+    r = requests.get(
+        url,
+        params={
+            "lat": lat,
+            "lon": lng,
+            "appid": OPENWEATHER_API_KEY,
+            "units": "metric",
+            "lang": "vi",
+            "exclude": "minutely"
+        },
+        timeout=12,
+    )
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"OpenWeather error: {r.status_code}")
+    data = r.json()
+
+    current = data.get("current") or {}
+    humidity = current.get("humidity")
+    temp = current.get("temp")
+    wind = current.get("wind_speed")
+    rain_1h = (current.get("rain") or {}).get("1h")
+
+    alerts = []
+    if isinstance(humidity, (int, float)) and humidity >= 85:
+        alerts.append({"code": "high_humidity", "title": "Độ ẩm cao", "message": "Độ ẩm cao dễ làm bệnh nấm phát triển. Hãy theo dõi ruộng/vườn kỹ hơn."})
+    if isinstance(rain_1h, (int, float)) and rain_1h >= 2:
+        alerts.append({"code": "rain", "title": "Có mưa", "message": "Mưa làm tăng ẩm và nguy cơ bệnh lan. Hạn chế tưới phun, đảm bảo thông thoáng."})
+    if isinstance(temp, (int, float)) and temp >= 32:
+        alerts.append({"code": "hot", "title": "Nắng nóng", "message": "Nhiệt độ cao, cây dễ stress. Tăng tưới hợp lý và che chắn khi cần."})
+    if isinstance(wind, (int, float)) and wind >= 10:
+        alerts.append({"code": "windy", "title": "Gió mạnh", "message": "Gió mạnh có thể làm phát tán mầm bệnh. Kiểm tra lá/cành sau gió lớn."})
+
+    out = {
+        "status": "success",
+        "lat": lat,
+        "lng": lng,
+        "current": {
+            "dt": current.get("dt"),
+            "temp": temp,
+            "humidity": humidity,
+            "wind_speed": wind,
+            "rain_1h": rain_1h,
+            "weather": (current.get("weather") or [])[:1],
+        },
+        "hourly": (data.get("hourly") or [])[:24],
+        "daily": (data.get("daily") or [])[:7],
+        "alerts": alerts,
+    }
+
+    cache_set(cache_key, out, ttl_seconds=300)
+    return out
 
 if __name__ == "__main__":
     import uvicorn

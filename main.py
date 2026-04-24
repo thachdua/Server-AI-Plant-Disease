@@ -8,6 +8,7 @@ import time
 from supabase import create_client, Client
 import psycopg2
 from datetime import datetime
+from datetime import timedelta
 
 app = FastAPI()
 
@@ -144,6 +145,108 @@ def outbreaks(
     cache_set(cache_key, items, ttl_seconds=20)
     return {"status": "success", "items": items}
 
+def _point_in_bbox(lat: float, lng: float, bbox: list[float]) -> bool:
+    # bbox format [minLng, minLat, maxLng, maxLat]
+    return bbox[1] <= lat <= bbox[3] and bbox[0] <= lng <= bbox[2]
+
+def _compute_level(count7d: int, max_sev: int | None) -> int:
+    max_sev = max_sev or 0
+    if count7d > 10 or max_sev >= 5:
+        return 4
+    if count7d >= 6 or max_sev >= 4:
+        return 3
+    if count7d >= 3 or max_sev >= 3:
+        return 2
+    if count7d >= 1:
+        return 1
+    return 0
+
+# --- Outbreak areas: Phase 1 (province overlays) ---
+@app.get("/outbreaks/areas")
+def outbreak_areas(level: str = "province", since_days: int = 7):
+    """
+    Phase 1: Province-only overlays for Hue (46), Da Nang (48), Quang Nam (49), Quang Ngai (51).
+    Uses public GIS polygons from dvhcvn repo (level1 polygons) and assigns points to provinces by bbox.
+    """
+    if level != "province":
+        raise HTTPException(status_code=400, detail="Only level=province supported in phase 1")
+
+    cache_key = f"outbreak_areas|level=province|since_days={since_days}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    provinces = [
+        {"id": "46", "name": "Huế", "url": "https://raw.githubusercontent.com/daohoangson/dvhcvn/master/data/gis/46.json"},
+        {"id": "48", "name": "Đà Nẵng", "url": "https://raw.githubusercontent.com/daohoangson/dvhcvn/master/data/gis/48.json"},
+        {"id": "49", "name": "Quảng Nam", "url": "https://raw.githubusercontent.com/daohoangson/dvhcvn/master/data/gis/49.json"},
+        {"id": "51", "name": "Quảng Ngãi", "url": "https://raw.githubusercontent.com/daohoangson/dvhcvn/master/data/gis/51.json"},
+    ]
+
+    # Load province polygons (cached by this endpoint cache)
+    areas = []
+    for p in provinces:
+        r = requests.get(p["url"], timeout=12)
+        if r.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"Boundary fetch failed for {p['id']}")
+        data = r.json()
+        areas.append({
+            "area_id": p["id"],
+            "name": p["name"],
+            "type": data.get("type"),
+            "bbox": data.get("bbox"),
+            "coordinates": data.get("coordinates"),
+        })
+
+    # Fetch recent outbreak points (public) from Supabase table
+    since_iso = (datetime.now().astimezone().replace(microsecond=0) - timedelta(days=max(1, min(since_days, 30)))).isoformat()
+    q = supabase.table("outbreak_cases").select("lat,lng,disease,severity,reported_at").gte("reported_at", since_iso)
+    resp = q.execute()
+    points = resp.data or []
+
+    # Aggregate by province bbox (approximation, good enough for phase 1)
+    out_items = []
+    for a in areas:
+        bbox = a.get("bbox")
+        if not bbox:
+            continue
+        count7d = 0
+        max_sev = 0
+        disease_counts = {}
+        for pt in points:
+            try:
+                lat = float(pt.get("lat"))
+                lng = float(pt.get("lng"))
+            except Exception:
+                continue
+            if _point_in_bbox(lat, lng, bbox):
+                count7d += 1
+                sev = int(pt.get("severity") or 0)
+                max_sev = max(max_sev, sev)
+                d = (pt.get("disease") or "").strip()
+                if d:
+                    disease_counts[d] = disease_counts.get(d, 0) + 1
+
+        top_disease = None
+        if disease_counts:
+            top_disease = sorted(disease_counts.items(), key=lambda kv: kv[1], reverse=True)[0][0]
+
+        level_value = _compute_level(count7d, max_sev)
+        out_items.append({
+            "area_id": a["area_id"],
+            "name": a["name"],
+            "level": level_value,
+            "count": count7d,
+            "max_severity": max_sev if count7d else None,
+            "top_disease": top_disease,
+            "bbox": a.get("bbox"),
+            "type": a.get("type"),
+            "coordinates": a.get("coordinates"),
+        })
+
+    out = {"status": "success", "items": out_items, "since_days": since_days}
+    cache_set(cache_key, out, ttl_seconds=60)
+    return out
 # --- 3. API CHÍNH ---
 @app.post("/predict")
 async def predict(request: Request, selected_plant: str = Form(...), file: UploadFile = File(...)):

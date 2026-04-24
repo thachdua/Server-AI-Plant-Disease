@@ -2,6 +2,7 @@ import os
 import io
 import requests
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
+from pydantic import BaseModel
 from supabase import create_client, Client
 import psycopg2
 from datetime import datetime
@@ -174,13 +175,7 @@ async def predict(request: Request, selected_plant: str = Form(...), file: Uploa
                 confidence_percent_value = confidence_value
                 confidence_percent_str = f"{confidence_percent_value:.2f}%"
 
-        # 5. Lưu vào Database
-        # DB column is typically numeric/double precision → store number (0..100), not "xx.xx%"
-        access_token = extract_bearer_token(request)
-        created_by = get_user_id_from_supabase(access_token) if access_token else None
-        save_to_db(predicted_plant, disease_name, confidence_percent_value, image_url, created_by=created_by)
-
-        # 6. Trả kết quả cuối cùng về cho iOS App
+        # 5. Trả kết quả cuối cùng về cho iOS App
         return {
             "status": "success",
             "plant": predicted_plant,
@@ -191,6 +186,29 @@ async def predict(request: Request, selected_plant: str = Form(...), file: Uploa
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+class SaveHistoryRequest(BaseModel):
+    plant: str | None = None
+    disease: str | None = None
+    confidence: float | None = None   # 0..100
+    image_url: str | None = None
+
+
+@app.post("/history/save")
+async def save_history(req: SaveHistoryRequest, request: Request):
+    access_token = extract_bearer_token(request)
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    created_by = get_user_id_from_supabase(access_token)
+    if not created_by:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    if not req.disease or not req.image_url:
+        raise HTTPException(status_code=400, detail="Missing required fields")
+
+    save_to_db(req.plant, req.disease, req.confidence, req.image_url, created_by=created_by)
+    return {"status": "success"}
 
 if __name__ == "__main__":
     import uvicorn

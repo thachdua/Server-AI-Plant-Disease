@@ -149,6 +149,44 @@ def _point_in_bbox(lat: float, lng: float, bbox: list[float]) -> bool:
     # bbox format [minLng, minLat, maxLng, maxLat]
     return bbox[1] <= lat <= bbox[3] and bbox[0] <= lng <= bbox[2]
 
+def _point_in_ring(lng: float, lat: float, ring: list[list[float]]) -> bool:
+    # Ray casting on [lng, lat] points
+    inside = False
+    n = len(ring)
+    if n < 3:
+        return False
+    j = n - 1
+    for i in range(n):
+        xi, yi = ring[i][0], ring[i][1]
+        xj, yj = ring[j][0], ring[j][1]
+        intersect = ((yi > lat) != (yj > lat)) and (lng < (xj - xi) * (lat - yi) / ((yj - yi) or 1e-12) + xi)
+        if intersect:
+            inside = not inside
+        j = i
+    return inside
+
+def _point_in_polygon(lng: float, lat: float, polygon: list[list[list[float]]]) -> bool:
+    # polygon: [ring1, ring2...] where ring1 is outer, others are holes
+    if not polygon:
+        return False
+    if not _point_in_ring(lng, lat, polygon[0]):
+        return False
+    # holes
+    for hole in polygon[1:]:
+        if _point_in_ring(lng, lat, hole):
+            return False
+    return True
+
+def _point_in_multipolygon(lng: float, lat: float, coords) -> bool:
+    # coords: MultiPolygon -> [polygon]
+    try:
+        for polygon in coords:
+            if _point_in_polygon(lng, lat, polygon):
+                return True
+    except Exception:
+        return False
+    return False
+
 def _compute_level(count7d: int, max_sev: int | None) -> int:
     max_sev = max_sev or 0
     if count7d > 10 or max_sev >= 5:
@@ -204,12 +242,13 @@ def outbreak_areas(level: str = "province", since_days: int = 7):
     resp = q.execute()
     points = resp.data or []
 
-    # Aggregate by province bbox (approximation, good enough for phase 1)
+    # Aggregate by province polygon (correct), fallback to bbox if needed
     out_items = []
     for a in areas:
         bbox = a.get("bbox")
         if not bbox:
             continue
+        coords = a.get("coordinates") or []
         count7d = 0
         max_sev = 0
         disease_counts = {}
@@ -219,7 +258,10 @@ def outbreak_areas(level: str = "province", since_days: int = 7):
                 lng = float(pt.get("lng"))
             except Exception:
                 continue
-            if _point_in_bbox(lat, lng, bbox):
+            in_area = _point_in_multipolygon(lng, lat, coords)
+            if not in_area:
+                in_area = _point_in_bbox(lat, lng, bbox)
+            if in_area:
                 count7d += 1
                 sev = int(pt.get("severity") or 0)
                 max_sev = max(max_sev, sev)

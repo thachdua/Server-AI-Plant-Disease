@@ -278,7 +278,9 @@ def weather(lat: float, lng: float):
     if cached is not None:
         return cached
 
-    url = "https://api.openweathermap.org/data/3.0/onecall"
+    # NOTE: One Call 3.0 often requires a paid subscription.
+    # For free-tier keys, use the legacy 2.5 endpoint.
+    url = "https://api.openweathermap.org/data/2.5/onecall"
     r = requests.get(
         url,
         params={
@@ -292,7 +294,12 @@ def weather(lat: float, lng: float):
         timeout=12,
     )
     if r.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"OpenWeather error: {r.status_code}")
+        # include body for easier debugging (invalid key, not activated yet, plan restriction, etc.)
+        try:
+            body = r.text
+        except Exception:
+            body = ""
+        raise HTTPException(status_code=502, detail=f"OpenWeather error: {r.status_code} {body}")
     data = r.json()
 
     current = data.get("current") or {}

@@ -1,6 +1,8 @@
 import os
 import io
 import requests
+import json
+import hashlib
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional
@@ -9,6 +11,7 @@ from supabase import create_client, Client
 import psycopg2
 from datetime import datetime
 from datetime import timedelta
+from openai import OpenAI
 
 app = FastAPI()
 
@@ -21,6 +24,9 @@ SUPABASE_KEY = "sb_publishable_gW6BTa8IWvVjO6Rbe-OGxQ_WgD6knWz"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+_openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # --- Simple in-memory cache (per instance) ---
 _cache = {}  # key -> (expires_at_epoch, value)
@@ -73,6 +79,113 @@ def save_to_db(plant_name, disease_name, confidence, image_url, created_by=None)
         print("✅ Đã lưu lịch sử vào Supabase")
     except Exception as e:
         print(f"❌ Lỗi lưu DB: {e}")
+
+
+def _canonical_json(obj) -> str:
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _llm_cache_get(kind: str, input_hash: str, lang: str = "vi"):
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT content_json, content_text, model
+            FROM llm_advice_cache
+            WHERE kind = %s AND input_hash = %s AND lang = %s
+            LIMIT 1
+            """,
+            (kind, input_hash, lang),
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not row:
+            return None
+        content_json, content_text, model = row
+        return {
+            "content_json": content_json,
+            "content_text": content_text,
+            "model": model,
+        }
+    except Exception as e:
+        print(f"❌ Lỗi đọc llm_advice_cache: {e}")
+        return None
+
+
+def _llm_cache_upsert(kind: str, input_hash: str, lang: str, model: str, content_json, content_text: str | None):
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO llm_advice_cache (kind, input_hash, lang, model, content_json, content_text)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s)
+            ON CONFLICT (kind, input_hash, lang)
+            DO UPDATE SET
+              model = EXCLUDED.model,
+              content_json = EXCLUDED.content_json,
+              content_text = EXCLUDED.content_text,
+              updated_at = now()
+            """,
+            (kind, input_hash, lang, model, json.dumps(content_json, ensure_ascii=False), content_text),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"❌ Lỗi ghi llm_advice_cache: {e}")
+        return False
+
+
+def _call_openai_json(system_prompt: str, user_payload: dict) -> dict:
+    if not _openai_client:
+        raise HTTPException(status_code=500, detail="Missing OPENAI_API_KEY")
+
+    user_text = _canonical_json(user_payload)
+    resp = _openai_client.chat.completions.create(
+        model=OPENAI_MODEL,
+        temperature=0.4,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
+        ],
+    )
+    content = (resp.choices[0].message.content or "").strip()
+    try:
+        return json.loads(content)
+    except Exception:
+        raise HTTPException(status_code=502, detail=f"LLM returned invalid JSON: {content[:300]}")
+
+
+def _validate_advice_json(advice: dict) -> dict:
+    if not isinstance(advice, dict):
+        raise HTTPException(status_code=502, detail="LLM output is not an object")
+    required_lists = ["symptoms", "causes", "treatments", "prevention"]
+    for k in required_lists:
+        v = advice.get(k)
+        if not isinstance(v, list):
+            advice[k] = []
+        else:
+            advice[k] = [str(x) for x in v if str(x).strip()][:10]
+
+    summary = advice.get("summary_vi")
+    if not isinstance(summary, str) or not summary.strip():
+        summary = "Gợi ý tham khảo: theo dõi triệu chứng, vệ sinh vườn, và xử lý theo khuyến cáo địa phương."
+    advice["summary_vi"] = summary.strip()
+
+    w = advice.get("when_to_seek_expert")
+    if not isinstance(w, str) or not w.strip():
+        w = "Nếu triệu chứng lan nhanh, cây suy kiệt, hoặc bạn không chắc chắn về chẩn đoán, hãy liên hệ chuyên gia."
+    advice["when_to_seek_expert"] = w.strip()
+    return advice
 
 
 def extract_bearer_token(request: Request):
@@ -422,6 +535,130 @@ async def save_history(req: SaveHistoryRequest, request: Request):
 
     save_to_db(req.plant, req.disease, req.confidence, req.image_url, created_by=created_by)
     return {"status": "success"}
+
+
+# --- LLM advice (OpenAI) with Supabase cache ---
+
+class LLMAdviceDiagnosisRequest(BaseModel):
+    plant: str | None = None
+    disease: str
+    confidence: float | None = None  # 0..100
+    user_note: str | None = None
+    weather_snapshot: dict | None = None
+
+
+class LLMAdviceWeatherRequest(BaseModel):
+    lat: float
+    lng: float
+    # optional: caller can provide snapshot to avoid extra weather call
+    weather_snapshot: dict | None = None
+
+
+_DIAGNOSIS_SYSTEM_PROMPT = """
+Bạn là trợ lý nông nghiệp. Nhiệm vụ: tạo lời khuyên tiếng Việt dựa trên (cây trồng, bệnh dự đoán, độ tin cậy, ghi chú người dùng, thời tiết nếu có).
+Yêu cầu đầu ra: CHỈ trả về JSON hợp lệ, theo schema:
+{
+  "summary_vi": "string",
+  "symptoms": ["string", ...],
+  "causes": ["string", ...],
+  "treatments": ["string", ...],
+  "prevention": ["string", ...],
+  "when_to_seek_expert": "string"
+}
+Ràng buộc an toàn:
+- Không đưa liều lượng/hoá chất cụ thể gây nguy hiểm; tránh chỉ định thuốc cấm.
+- Ưu tiên IPM (quản lý dịch hại tổng hợp), vệ sinh vườn, thông thoáng, theo dõi.
+- Nếu độ tin cậy thấp hoặc triệu chứng nặng/lan nhanh, khuyến nghị hỏi chuyên gia/khuyến nông địa phương.
+"""
+
+_WEATHER_SYSTEM_PROMPT = """
+Bạn là trợ lý nông nghiệp. Nhiệm vụ: tạo lời khuyên tiếng Việt dựa trên thời tiết (nhiệt độ, độ ẩm, mưa, gió) để giảm rủi ro sâu bệnh.
+Yêu cầu đầu ra: CHỈ trả về JSON hợp lệ theo schema giống:
+{
+  "summary_vi": "string",
+  "symptoms": ["string", ...],   // có thể là dấu hiệu cần theo dõi ngoài đồng
+  "causes": ["string", ...],     // yếu tố thời tiết làm tăng rủi ro
+  "treatments": ["string", ...], // hành động khuyến nghị ngay (không nêu liều hoá chất)
+  "prevention": ["string", ...],
+  "when_to_seek_expert": "string"
+}
+Ràng buộc an toàn giống như trên.
+"""
+
+
+@app.post("/llm/advice/diagnosis")
+async def llm_advice_diagnosis(req: LLMAdviceDiagnosisRequest):
+    payload = {
+        "plant": req.plant,
+        "disease": req.disease,
+        "confidence": req.confidence,
+        "user_note": req.user_note,
+        "weather_snapshot": req.weather_snapshot,
+        "lang": "vi",
+    }
+    input_hash = _sha256(_canonical_json(payload))
+    cached = _llm_cache_get("diagnosis", input_hash, "vi")
+    if cached:
+        return {
+            "status": "success",
+            "cached": True,
+            "model": cached.get("model"),
+            "advice": cached.get("content_json"),
+            "summary_vi": cached.get("content_text"),
+        }
+
+    raw = _call_openai_json(_DIAGNOSIS_SYSTEM_PROMPT, payload)
+    advice = _validate_advice_json(raw)
+    _llm_cache_upsert("diagnosis", input_hash, "vi", OPENAI_MODEL, advice, advice.get("summary_vi"))
+    return {"status": "success", "cached": False, "model": OPENAI_MODEL, "advice": advice, "summary_vi": advice.get("summary_vi")}
+
+
+@app.post("/llm/advice/weather")
+async def llm_advice_weather(req: LLMAdviceWeatherRequest):
+    snapshot = req.weather_snapshot
+    if snapshot is None:
+        # reuse logic from /weather endpoint (call OpenWeather directly)
+        url = "https://api.openweathermap.org/data/3.0/onecall"
+        r = requests.get(
+            url,
+            params={
+                "lat": req.lat,
+                "lon": req.lng,
+                "appid": OPENWEATHER_API_KEY,
+                "units": "metric",
+                "lang": "vi",
+                "exclude": "minutely",
+            },
+            timeout=12,
+        )
+        if r.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"OpenWeather error: {r.status_code} {r.text}")
+        data = r.json()
+        current = data.get("current") or {}
+        snapshot = {
+            "temp": current.get("temp"),
+            "humidity": current.get("humidity"),
+            "wind_speed": current.get("wind_speed"),
+            "rain_1h": (current.get("rain") or {}).get("1h"),
+            "weather": (current.get("weather") or [])[:1],
+        }
+
+    payload = {"lat": round(req.lat, 3), "lng": round(req.lng, 3), "snapshot": snapshot, "lang": "vi"}
+    input_hash = _sha256(_canonical_json(payload))
+    cached = _llm_cache_get("weather", input_hash, "vi")
+    if cached:
+        return {
+            "status": "success",
+            "cached": True,
+            "model": cached.get("model"),
+            "advice": cached.get("content_json"),
+            "summary_vi": cached.get("content_text"),
+        }
+
+    raw = _call_openai_json(_WEATHER_SYSTEM_PROMPT, payload)
+    advice = _validate_advice_json(raw)
+    _llm_cache_upsert("weather", input_hash, "vi", OPENAI_MODEL, advice, advice.get("summary_vi"))
+    return {"status": "success", "cached": False, "model": OPENAI_MODEL, "advice": advice, "summary_vi": advice.get("summary_vi")}
 
 
 # --- Weather (OpenWeather) ---

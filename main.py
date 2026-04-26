@@ -25,6 +25,11 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
+# Comma-separated fallbacks, used when Gemini returns 503 UNAVAILABLE.
+GEMINI_FALLBACK_MODELS = [
+    m.strip() for m in os.environ.get("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash-lite,gemini-2.5-flash").split(",")
+    if m.strip()
+]
 GEMINI_API_VERSION = os.environ.get("GEMINI_API_VERSION", "v1beta")
 
 # --- Simple in-memory cache (per instance) ---
@@ -150,7 +155,6 @@ def _call_gemini_json(system_prompt: str, user_payload: dict) -> dict:
 
     # Gemini Developer API (REST): generateContent
     # https://generativelanguage.googleapis.com/{apiVersion}/models/{model}:generateContent?key=...
-    url = f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}/models/{GEMINI_MODEL}:generateContent"
     body = {
         "systemInstruction": {
             "parts": [{"text": system_prompt}],
@@ -167,21 +171,37 @@ def _call_gemini_json(system_prompt: str, user_payload: dict) -> dict:
         },
     }
 
-    r = requests.post(url, params={"key": GEMINI_API_KEY}, json=body, timeout=20)
-    if r.status_code != 200:
+    models_to_try = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL]
+    last_error = None
+    for model in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}/models/{model}:generateContent"
+        try:
+            r = requests.post(url, params={"key": GEMINI_API_KEY}, json=body, timeout=25)
+        except Exception as e:
+            last_error = f"request_failed: {e}"
+            continue
+
+        if r.status_code == 200:
+            data = r.json()
+            try:
+                text = data["candidates"][0]["content"]["parts"][0]["text"]
+            except Exception:
+                raise HTTPException(status_code=502, detail=f"Gemini bad response: {str(data)[:300]}")
+
+            text = (text or "").strip()
+            try:
+                return json.loads(text)
+            except Exception:
+                raise HTTPException(status_code=502, detail=f"Gemini returned invalid JSON: {text[:300]}")
+
+        # If 503 (high demand), try fallbacks
+        if r.status_code == 503:
+            last_error = f"Gemini error: 503 {r.text}"
+            continue
+
         raise HTTPException(status_code=502, detail=f"Gemini error: {r.status_code} {r.text}")
 
-    data = r.json()
-    try:
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception:
-        raise HTTPException(status_code=502, detail=f"Gemini bad response: {str(data)[:300]}")
-
-    text = (text or "").strip()
-    try:
-        return json.loads(text)
-    except Exception:
-        raise HTTPException(status_code=502, detail=f"Gemini returned invalid JSON: {text[:300]}")
+    raise HTTPException(status_code=502, detail=last_error or "Gemini unavailable")
 
 
 def _validate_advice_json(advice: dict) -> dict:
@@ -218,6 +238,36 @@ def _is_cache_expired(kind: str, updated_at) -> bool:
         return age.total_seconds() > 6 * 3600
     except Exception:
         return True
+
+def _diagnosis_fallback_advice(plant: str | None, disease: str, confidence: float | None) -> dict:
+    disease_norm = (disease or "").strip()
+    plant_norm = (plant or "").strip()
+    header = f"{plant_norm + ' - ' if plant_norm else ''}{disease_norm or 'Bệnh lá'}"
+    conf_text = f" (độ tin cậy ~{confidence:.0f}%)" if isinstance(confidence, (int, float)) else ""
+    return _validate_advice_json({
+        "summary_vi": f"Gợi ý tham khảo cho {header}{conf_text}: ưu tiên vệ sinh vườn, cắt bỏ lá/cành bệnh, giảm ẩm và theo dõi lây lan. (Hệ thống tư vấn AI đang quá tải, đây là gợi ý mặc định.)",
+        "symptoms": [
+            "Đốm/loang màu bất thường trên lá, có thể kèm viền sẫm",
+            "Lá vàng, khô mép, rụng lá sớm",
+            "Vết bệnh lan rộng nhanh khi ẩm cao hoặc sau mưa",
+        ],
+        "causes": [
+            "Độ ẩm cao, lá ướt lâu sau mưa/tưới phun",
+            "Tán lá rậm, thông thoáng kém",
+            "Nguồn bệnh còn tồn dư trên lá rụng/dụng cụ chưa khử trùng",
+        ],
+        "treatments": [
+            "Cắt bỏ và tiêu huỷ phần lá/cành bệnh; khử trùng kéo/dụng cụ sau khi cắt",
+            "Tăng thông thoáng: tỉa tán, làm sạch cỏ dại; hạn chế nước đọng",
+            "Tránh tưới phun lên lá vào chiều tối; ưu tiên tưới gốc",
+        ],
+        "prevention": [
+            "Duy trì vườn sạch, thu gom lá rụng; luân canh nếu phù hợp",
+            "Theo dõi sau mưa/ẩm cao để phát hiện sớm",
+            "Tham khảo cán bộ khuyến nông/nhà vườn địa phương khi cần phun phòng trị",
+        ],
+        "when_to_seek_expert": "Nếu vết bệnh lan rất nhanh, cây suy kiệt, hoặc bạn không chắc chẩn đoán, hãy gửi ảnh và liên hệ chuyên gia để được hướng dẫn.",
+    })
 
 
 def extract_bearer_token(request: Request):
@@ -640,10 +690,28 @@ async def llm_advice_diagnosis(req: LLMAdviceDiagnosisRequest):
                 "summary_vi": cached.get("content_text"),
             }
 
-        raw = _call_gemini_json(_DIAGNOSIS_SYSTEM_PROMPT, payload)
-        advice = _validate_advice_json(raw)
-        _llm_cache_upsert("diagnosis", input_hash, "vi", GEMINI_MODEL, advice, advice.get("summary_vi"))
-        return {"status": "success", "cached": False, "model": GEMINI_MODEL, "advice": advice, "summary_vi": advice.get("summary_vi")}
+        try:
+            raw = _call_gemini_json(_DIAGNOSIS_SYSTEM_PROMPT, payload)
+            advice = _validate_advice_json(raw)
+            _llm_cache_upsert("diagnosis", input_hash, "vi", GEMINI_MODEL, advice, advice.get("summary_vi"))
+            return {"status": "success", "cached": False, "model": GEMINI_MODEL, "advice": advice, "summary_vi": advice.get("summary_vi")}
+        except HTTPException as e:
+            # If Gemini is temporarily unavailable, return a structured fallback and cache it in RAM briefly.
+            if e.status_code == 502 and "503" in str(e.detail):
+                fallback_key = f"llm_fallback|diagnosis|{input_hash}"
+                cached_fb = cache_get(fallback_key)
+                if cached_fb is None:
+                    cached_fb = _diagnosis_fallback_advice(req.plant, req.disease, req.confidence)
+                    cache_set(fallback_key, cached_fb, ttl_seconds=300)
+                return {
+                    "status": "success",
+                    "cached": False,
+                    "fallback": True,
+                    "model": "fallback",
+                    "advice": cached_fb,
+                    "summary_vi": cached_fb.get("summary_vi"),
+                }
+            raise e
     except HTTPException:
         raise
     except Exception as e:
@@ -694,7 +762,21 @@ async def llm_advice_weather(req: LLMAdviceWeatherRequest):
                 "summary_vi": cached.get("content_text"),
             }
 
-        raw = _call_gemini_json(_WEATHER_SYSTEM_PROMPT, payload)
+        try:
+            raw = _call_gemini_json(_WEATHER_SYSTEM_PROMPT, payload)
+        except HTTPException as e:
+            # If Gemini is temporarily unavailable but we have stale cache, return stale cache.
+            if cached:
+                return {
+                    "status": "success",
+                    "cached": True,
+                    "stale": True,
+                    "model": cached.get("model"),
+                    "advice": cached.get("content_json"),
+                    "summary_vi": cached.get("content_text"),
+                }
+            raise e
+
         advice = _validate_advice_json(raw)
         _llm_cache_upsert("weather", input_hash, "vi", GEMINI_MODEL, advice, advice.get("summary_vi"))
         return {"status": "success", "cached": False, "model": GEMINI_MODEL, "advice": advice, "summary_vi": advice.get("summary_vi")}

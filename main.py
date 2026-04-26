@@ -24,6 +24,15 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")
+# Optional: rotate multiple keys when quota is hit.
+# Example: GEMINI_API_KEYS="key1,key2"
+GEMINI_API_KEYS = [
+    k.strip()
+    for k in os.environ.get("GEMINI_API_KEYS", "").split(",")
+    if k.strip()
+]
+if not GEMINI_API_KEYS and GEMINI_API_KEY:
+    GEMINI_API_KEYS = [GEMINI_API_KEY]
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
 # Comma-separated fallbacks, used when Gemini returns 503 UNAVAILABLE.
 GEMINI_FALLBACK_MODELS = [
@@ -150,7 +159,7 @@ def _llm_cache_upsert(kind: str, input_hash: str, lang: str, model: str, content
 
 
 def _call_gemini_json(system_prompt: str, user_payload: dict) -> dict:
-    if not GEMINI_API_KEY:
+    if not GEMINI_API_KEYS:
         raise HTTPException(status_code=500, detail="Missing GEMINI_API_KEY")
 
     # Gemini Developer API (REST): generateContent
@@ -172,34 +181,41 @@ def _call_gemini_json(system_prompt: str, user_payload: dict) -> dict:
     }
 
     models_to_try = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL]
+    keys_to_try = GEMINI_API_KEYS[:]
     last_error = None
-    for model in models_to_try:
-        url = f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}/models/{model}:generateContent"
-        try:
-            r = requests.post(url, params={"key": GEMINI_API_KEY}, json=body, timeout=25)
-        except Exception as e:
-            last_error = f"request_failed: {e}"
-            continue
-
-        if r.status_code == 200:
-            data = r.json()
+    for api_key in keys_to_try:
+        for model in models_to_try:
+            url = f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}/models/{model}:generateContent"
             try:
-                text = data["candidates"][0]["content"]["parts"][0]["text"]
-            except Exception:
-                raise HTTPException(status_code=502, detail=f"Gemini bad response: {str(data)[:300]}")
+                r = requests.post(url, params={"key": api_key}, json=body, timeout=25)
+            except Exception as e:
+                last_error = f"request_failed: {e}"
+                continue
 
-            text = (text or "").strip()
-            try:
-                return json.loads(text)
-            except Exception:
-                raise HTTPException(status_code=502, detail=f"Gemini returned invalid JSON: {text[:300]}")
+            if r.status_code == 200:
+                data = r.json()
+                try:
+                    text = data["candidates"][0]["content"]["parts"][0]["text"]
+                except Exception:
+                    raise HTTPException(status_code=502, detail=f"Gemini bad response: {str(data)[:300]}")
 
-        # If 503 (high demand), try fallbacks
-        if r.status_code == 503:
-            last_error = f"Gemini error: 503 {r.text}"
-            continue
+                text = (text or "").strip()
+                try:
+                    return json.loads(text)
+                except Exception:
+                    raise HTTPException(status_code=502, detail=f"Gemini returned invalid JSON: {text[:300]}")
 
-        raise HTTPException(status_code=502, detail=f"Gemini error: {r.status_code} {r.text}")
+            # If 503 (high demand), try fallback models / maybe other key
+            if r.status_code == 503:
+                last_error = f"Gemini error: 503 {r.text}"
+                continue
+
+            # If quota/rate-limit on a key, try next key
+            if r.status_code in (401, 403, 429):
+                last_error = f"Gemini key error: {r.status_code} {r.text}"
+                break
+
+            raise HTTPException(status_code=502, detail=f"Gemini error: {r.status_code} {r.text}")
 
     raise HTTPException(status_code=502, detail=last_error or "Gemini unavailable")
 
@@ -666,6 +682,46 @@ Yêu cầu đầu ra: CHỈ trả về JSON hợp lệ theo schema giống:
 }
 Ràng buộc an toàn giống như trên.
 """
+
+class LLMChatRequest(BaseModel):
+    messages: list[dict]  # [{role: 'user'|'assistant', text: '...'}]
+
+
+@app.post("/llm/chat")
+async def llm_chat(req: LLMChatRequest):
+    try:
+        msgs = req.messages or []
+        # Keep last 12 messages to avoid huge prompts
+        msgs = msgs[-12:]
+        prompt_lines = []
+        prompt_lines.append("Bạn là trợ lý nông nghiệp. Trả lời ngắn gọn, rõ ràng, tiếng Việt. Tránh đưa liều hoá chất nguy hiểm; ưu tiên IPM.")
+        prompt_lines.append("")
+        for m in msgs:
+            role = (m.get("role") or "").strip()
+            text = (m.get("text") or "").strip()
+            if not text:
+                continue
+            if role == "assistant":
+                prompt_lines.append(f"Trợ lý: {text}")
+            else:
+                prompt_lines.append(f"Người dùng: {text}")
+        prompt_lines.append("Trợ lý:")
+        user_payload = {"chat": "\n".join(prompt_lines), "lang": "vi"}
+
+        raw = _call_gemini_json("Trả lời dạng JSON: {\"reply\":\"...\"}", user_payload)
+        if isinstance(raw, dict) and isinstance(raw.get("reply"), str) and raw["reply"].strip():
+            return {"status": "success", "reply": raw["reply"].strip()}
+
+        # If schema isn't respected, fallback to plain text extraction
+        reply = raw.get("text") if isinstance(raw, dict) else None
+        if isinstance(reply, str) and reply.strip():
+            return {"status": "success", "reply": reply.strip()}
+        return {"status": "success", "reply": "Mình chưa nhận được nội dung trả lời. Bạn thử hỏi lại giúp mình nhé."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ /llm/chat error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/llm/advice/diagnosis")

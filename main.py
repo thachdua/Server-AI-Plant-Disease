@@ -11,7 +11,8 @@ from supabase import create_client, Client
 import psycopg2
 from datetime import datetime
 from datetime import timedelta
-from openai import OpenAI
+from google import genai
+from google.genai import types
 
 app = FastAPI()
 
@@ -24,9 +25,9 @@ SUPABASE_KEY = "sb_publishable_gW6BTa8IWvVjO6Rbe-OGxQ_WgD6knWz"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY", "")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
-_openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
+_gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # --- Simple in-memory cache (per instance) ---
 _cache = {}  # key -> (expires_at_epoch, value)
@@ -95,7 +96,7 @@ def _llm_cache_get(kind: str, input_hash: str, lang: str = "vi"):
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT content_json, content_text, model
+            SELECT content_json, content_text, model, updated_at
             FROM llm_advice_cache
             WHERE kind = %s AND input_hash = %s AND lang = %s
             LIMIT 1
@@ -107,11 +108,12 @@ def _llm_cache_get(kind: str, input_hash: str, lang: str = "vi"):
         conn.close()
         if not row:
             return None
-        content_json, content_text, model = row
+        content_json, content_text, model, updated_at = row
         return {
             "content_json": content_json,
             "content_text": content_text,
             "model": model,
+            "updated_at": updated_at,
         }
     except Exception as e:
         print(f"❌ Lỗi đọc llm_advice_cache: {e}")
@@ -144,25 +146,37 @@ def _llm_cache_upsert(kind: str, input_hash: str, lang: str, model: str, content
         return False
 
 
-def _call_openai_json(system_prompt: str, user_payload: dict) -> dict:
-    if not _openai_client:
-        raise HTTPException(status_code=500, detail="Missing OPENAI_API_KEY")
+def _call_gemini_json(system_prompt: str, user_payload: dict) -> dict:
+    if not _gemini_client:
+        raise HTTPException(status_code=500, detail="Missing GEMINI_API_KEY")
 
     user_text = _canonical_json(user_payload)
-    resp = _openai_client.chat.completions.create(
-        model=OPENAI_MODEL,
-        temperature=0.4,
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_text},
-        ],
+    resp = _gemini_client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=user_text,
+        config=types.GenerateContentConfig(
+            temperature=0.4,
+            system_instruction=system_prompt,
+            response_mime_type="application/json",
+            response_schema={
+                "type": "object",
+                "properties": {
+                    "summary_vi": {"type": "string"},
+                    "symptoms": {"type": "array", "items": {"type": "string"}},
+                    "causes": {"type": "array", "items": {"type": "string"}},
+                    "treatments": {"type": "array", "items": {"type": "string"}},
+                    "prevention": {"type": "array", "items": {"type": "string"}},
+                    "when_to_seek_expert": {"type": "string"},
+                },
+                "required": ["summary_vi", "symptoms", "causes", "treatments", "prevention", "when_to_seek_expert"],
+            },
+        ),
     )
-    content = (resp.choices[0].message.content or "").strip()
+    text = (resp.text or "").strip()
     try:
-        return json.loads(content)
+        return json.loads(text)
     except Exception:
-        raise HTTPException(status_code=502, detail=f"LLM returned invalid JSON: {content[:300]}")
+        raise HTTPException(status_code=502, detail=f"Gemini returned invalid JSON: {text[:300]}")
 
 
 def _validate_advice_json(advice: dict) -> dict:
@@ -186,6 +200,19 @@ def _validate_advice_json(advice: dict) -> dict:
         w = "Nếu triệu chứng lan nhanh, cây suy kiệt, hoặc bạn không chắc chắn về chẩn đoán, hãy liên hệ chuyên gia."
     advice["when_to_seek_expert"] = w.strip()
     return advice
+
+
+def _is_cache_expired(kind: str, updated_at) -> bool:
+    # Weather: expire after 6 hours
+    if kind != "weather":
+        return False
+    try:
+        if not updated_at:
+            return True
+        age = datetime.now().astimezone() - updated_at
+        return age.total_seconds() > 6 * 3600
+    except Exception:
+        return True
 
 
 def extract_bearer_token(request: Request):
@@ -537,7 +564,7 @@ async def save_history(req: SaveHistoryRequest, request: Request):
     return {"status": "success"}
 
 
-# --- LLM advice (OpenAI) with Supabase cache ---
+# --- LLM advice (Gemini) with Supabase cache ---
 
 class LLMAdviceDiagnosisRequest(BaseModel):
     plant: str | None = None
@@ -607,10 +634,10 @@ async def llm_advice_diagnosis(req: LLMAdviceDiagnosisRequest):
             "summary_vi": cached.get("content_text"),
         }
 
-    raw = _call_openai_json(_DIAGNOSIS_SYSTEM_PROMPT, payload)
+    raw = _call_gemini_json(_DIAGNOSIS_SYSTEM_PROMPT, payload)
     advice = _validate_advice_json(raw)
-    _llm_cache_upsert("diagnosis", input_hash, "vi", OPENAI_MODEL, advice, advice.get("summary_vi"))
-    return {"status": "success", "cached": False, "model": OPENAI_MODEL, "advice": advice, "summary_vi": advice.get("summary_vi")}
+    _llm_cache_upsert("diagnosis", input_hash, "vi", GEMINI_MODEL, advice, advice.get("summary_vi"))
+    return {"status": "success", "cached": False, "model": GEMINI_MODEL, "advice": advice, "summary_vi": advice.get("summary_vi")}
 
 
 @app.post("/llm/advice/weather")
@@ -646,7 +673,7 @@ async def llm_advice_weather(req: LLMAdviceWeatherRequest):
     payload = {"lat": round(req.lat, 3), "lng": round(req.lng, 3), "snapshot": snapshot, "lang": "vi"}
     input_hash = _sha256(_canonical_json(payload))
     cached = _llm_cache_get("weather", input_hash, "vi")
-    if cached:
+    if cached and not _is_cache_expired("weather", cached.get("updated_at")):
         return {
             "status": "success",
             "cached": True,
@@ -655,10 +682,10 @@ async def llm_advice_weather(req: LLMAdviceWeatherRequest):
             "summary_vi": cached.get("content_text"),
         }
 
-    raw = _call_openai_json(_WEATHER_SYSTEM_PROMPT, payload)
+    raw = _call_gemini_json(_WEATHER_SYSTEM_PROMPT, payload)
     advice = _validate_advice_json(raw)
-    _llm_cache_upsert("weather", input_hash, "vi", OPENAI_MODEL, advice, advice.get("summary_vi"))
-    return {"status": "success", "cached": False, "model": OPENAI_MODEL, "advice": advice, "summary_vi": advice.get("summary_vi")}
+    _llm_cache_upsert("weather", input_hash, "vi", GEMINI_MODEL, advice, advice.get("summary_vi"))
+    return {"status": "success", "cached": False, "model": GEMINI_MODEL, "advice": advice, "summary_vi": advice.get("summary_vi")}
 
 
 # --- Weather (OpenWeather) ---

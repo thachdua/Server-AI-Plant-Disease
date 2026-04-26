@@ -745,6 +745,7 @@ Ràng buộc an toàn giống như trên.
 
 class LLMChatRequest(BaseModel):
     messages: list[dict]  # [{role: 'user'|'assistant', text: '...'}]
+    mode: str | None = None  # 'agriculture' | 'general'
 
 
 @app.post("/llm/chat")
@@ -764,12 +765,21 @@ async def llm_chat(req: LLMChatRequest):
             else:
                 convo.append(f"Người dùng: {text}")
         convo_text = "\n".join(convo).strip()
-        system_prompt = (
-            "Bạn là trợ lý nông nghiệp. Trả lời tiếng Việt, ngắn gọn, rõ ràng.\n"
-            "Không dùng markdown (không dùng dấu * hoặc **), không dùng tiêu đề dạng ###.\n"
-            "Nếu cần liệt kê, dùng ký tự '•' và xuống dòng.\n"
-            "Tránh đưa liều lượng/hoá chất nguy hiểm; ưu tiên IPM; khuyến nghị hỏi khuyến nông địa phương khi cần."
-        )
+        mode = (req.mode or "agriculture").strip().lower()
+        if mode == "general":
+            system_prompt = (
+                "Bạn là trợ lý AI tổng quát. Trả lời tiếng Việt, ngắn gọn, rõ ràng.\n"
+                "Không dùng markdown (không dùng dấu * hoặc **), không dùng tiêu đề dạng ###.\n"
+                "Nếu cần liệt kê, dùng ký tự '•' và xuống dòng.\n"
+                "Nếu người dùng hỏi về nông nghiệp/bệnh cây, hãy trả lời theo hướng an toàn và thực tế."
+            )
+        else:
+            system_prompt = (
+                "Bạn là trợ lý nông nghiệp. Trả lời tiếng Việt, ngắn gọn, rõ ràng.\n"
+                "Không dùng markdown (không dùng dấu * hoặc **), không dùng tiêu đề dạng ###.\n"
+                "Nếu cần liệt kê, dùng ký tự '•' và xuống dòng.\n"
+                "Tránh đưa liều lượng/hoá chất nguy hiểm; ưu tiên IPM; khuyến nghị hỏi khuyến nông địa phương khi cần."
+            )
         reply = _call_gemini_text(system_prompt, convo_text + "\nTrợ lý:", model_override=GEMINI_CHAT_MODEL)
         if not reply.strip():
             reply = "Mình chưa nhận được nội dung trả lời. Bạn thử hỏi lại giúp mình nhé."

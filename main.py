@@ -221,6 +221,64 @@ def _call_gemini_json(system_prompt: str, user_payload: dict) -> dict:
 
     raise HTTPException(status_code=502, detail=last_error or "Gemini unavailable")
 
+def _clean_markdown(text: str) -> str:
+    # Convert common markdown bullets/bold to plain text.
+    if not isinstance(text, str):
+        return ""
+    t = text.replace("\r\n", "\n")
+    # remove bold markers
+    t = t.replace("**", "")
+    # normalize bullet prefixes: "* " / "- " -> "• "
+    lines = []
+    for ln in t.split("\n"):
+        s = ln.strip()
+        if s.startswith("* "):
+            s = "• " + s[2:].strip()
+        elif s.startswith("- "):
+            s = "• " + s[2:].strip()
+        elif s.startswith("• "):
+            s = "• " + s[2:].strip()
+        lines.append(s)
+    # collapse excessive blank lines
+    out = "\n".join([l for l in lines]).strip()
+    while "\n\n\n" in out:
+        out = out.replace("\n\n\n", "\n\n")
+    return out
+
+def _call_gemini_text(system_prompt: str, user_text: str, model_override: str | None = None) -> str:
+    if not GEMINI_API_KEYS:
+        raise HTTPException(status_code=500, detail="Missing GEMINI_API_KEY")
+    body = {
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
+        "contents": [{"role": "user", "parts": [{"text": user_text}]}],
+        "generationConfig": {"temperature": 0.3},
+    }
+    models_to_try = [model_override or GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != (model_override or GEMINI_MODEL)]
+    last_error = None
+    for api_key in GEMINI_API_KEYS:
+        for model in models_to_try:
+            url = f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}/models/{model}:generateContent"
+            try:
+                r = requests.post(url, params={"key": api_key}, json=body, timeout=25)
+            except Exception as e:
+                last_error = f"request_failed: {e}"
+                continue
+            if r.status_code == 200:
+                data = r.json()
+                try:
+                    text = data["candidates"][0]["content"]["parts"][0]["text"]
+                except Exception:
+                    raise HTTPException(status_code=502, detail=f"Gemini bad response: {str(data)[:300]}")
+                return _clean_markdown((text or "").strip())
+            if r.status_code == 503:
+                last_error = f"Gemini error: 503 {r.text}"
+                continue
+            if r.status_code in (401, 403, 429):
+                last_error = f"Gemini key error: {r.status_code} {r.text}"
+                break
+            raise HTTPException(status_code=502, detail=f"Gemini error: {r.status_code} {r.text}")
+    raise HTTPException(status_code=502, detail=last_error or "Gemini unavailable")
+
 
 def _validate_advice_json(advice: dict) -> dict:
     if not isinstance(advice, dict):
@@ -695,37 +753,27 @@ async def llm_chat(req: LLMChatRequest):
         msgs = req.messages or []
         # Keep last 12 messages to avoid huge prompts
         msgs = msgs[-12:]
-        prompt_lines = []
-        prompt_lines.append("Bạn là trợ lý nông nghiệp. Trả lời ngắn gọn, rõ ràng, tiếng Việt. Tránh đưa liều hoá chất nguy hiểm; ưu tiên IPM.")
-        prompt_lines.append("")
+        convo = []
         for m in msgs:
             role = (m.get("role") or "").strip()
             text = (m.get("text") or "").strip()
             if not text:
                 continue
             if role == "assistant":
-                prompt_lines.append(f"Trợ lý: {text}")
+                convo.append(f"Trợ lý: {text}")
             else:
-                prompt_lines.append(f"Người dùng: {text}")
-        prompt_lines.append("Trợ lý:")
-        user_payload = {"chat": "\n".join(prompt_lines), "lang": "vi"}
-
-        # Temporarily swap model for chat for speed
-        global GEMINI_MODEL
-        original_model = GEMINI_MODEL
-        GEMINI_MODEL = GEMINI_CHAT_MODEL or GEMINI_MODEL
-        try:
-            raw = _call_gemini_json("Trả lời dạng JSON: {\"reply\":\"...\"}", user_payload)
-        finally:
-            GEMINI_MODEL = original_model
-        if isinstance(raw, dict) and isinstance(raw.get("reply"), str) and raw["reply"].strip():
-            return {"status": "success", "reply": raw["reply"].strip()}
-
-        # If schema isn't respected, fallback to plain text extraction
-        reply = raw.get("text") if isinstance(raw, dict) else None
-        if isinstance(reply, str) and reply.strip():
-            return {"status": "success", "reply": reply.strip()}
-        return {"status": "success", "reply": "Mình chưa nhận được nội dung trả lời. Bạn thử hỏi lại giúp mình nhé."}
+                convo.append(f"Người dùng: {text}")
+        convo_text = "\n".join(convo).strip()
+        system_prompt = (
+            "Bạn là trợ lý nông nghiệp. Trả lời tiếng Việt, ngắn gọn, rõ ràng.\n"
+            "Không dùng markdown (không dùng dấu * hoặc **), không dùng tiêu đề dạng ###.\n"
+            "Nếu cần liệt kê, dùng ký tự '•' và xuống dòng.\n"
+            "Tránh đưa liều lượng/hoá chất nguy hiểm; ưu tiên IPM; khuyến nghị hỏi khuyến nông địa phương khi cần."
+        )
+        reply = _call_gemini_text(system_prompt, convo_text + "\nTrợ lý:", model_override=GEMINI_CHAT_MODEL)
+        if not reply.strip():
+            reply = "Mình chưa nhận được nội dung trả lời. Bạn thử hỏi lại giúp mình nhé."
+        return {"status": "success", "reply": reply}
     except HTTPException:
         raise
     except Exception as e:

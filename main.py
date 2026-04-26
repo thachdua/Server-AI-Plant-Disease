@@ -620,77 +620,89 @@ Ràng buộc an toàn giống như trên.
 
 @app.post("/llm/advice/diagnosis")
 async def llm_advice_diagnosis(req: LLMAdviceDiagnosisRequest):
-    payload = {
-        "plant": req.plant,
-        "disease": req.disease,
-        "confidence": req.confidence,
-        "user_note": req.user_note,
-        "weather_snapshot": req.weather_snapshot,
-        "lang": "vi",
-    }
-    input_hash = _sha256(_canonical_json(payload))
-    cached = _llm_cache_get("diagnosis", input_hash, "vi")
-    if cached:
-        return {
-            "status": "success",
-            "cached": True,
-            "model": cached.get("model"),
-            "advice": cached.get("content_json"),
-            "summary_vi": cached.get("content_text"),
+    try:
+        payload = {
+            "plant": req.plant,
+            "disease": req.disease,
+            "confidence": req.confidence,
+            "user_note": req.user_note,
+            "weather_snapshot": req.weather_snapshot,
+            "lang": "vi",
         }
+        input_hash = _sha256(_canonical_json(payload))
+        cached = _llm_cache_get("diagnosis", input_hash, "vi")
+        if cached:
+            return {
+                "status": "success",
+                "cached": True,
+                "model": cached.get("model"),
+                "advice": cached.get("content_json"),
+                "summary_vi": cached.get("content_text"),
+            }
 
-    raw = _call_gemini_json(_DIAGNOSIS_SYSTEM_PROMPT, payload)
-    advice = _validate_advice_json(raw)
-    _llm_cache_upsert("diagnosis", input_hash, "vi", GEMINI_MODEL, advice, advice.get("summary_vi"))
-    return {"status": "success", "cached": False, "model": GEMINI_MODEL, "advice": advice, "summary_vi": advice.get("summary_vi")}
+        raw = _call_gemini_json(_DIAGNOSIS_SYSTEM_PROMPT, payload)
+        advice = _validate_advice_json(raw)
+        _llm_cache_upsert("diagnosis", input_hash, "vi", GEMINI_MODEL, advice, advice.get("summary_vi"))
+        return {"status": "success", "cached": False, "model": GEMINI_MODEL, "advice": advice, "summary_vi": advice.get("summary_vi")}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ /llm/advice/diagnosis error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/llm/advice/weather")
 async def llm_advice_weather(req: LLMAdviceWeatherRequest):
-    snapshot = req.weather_snapshot
-    if snapshot is None:
-        # reuse logic from /weather endpoint (call OpenWeather directly)
-        url = "https://api.openweathermap.org/data/3.0/onecall"
-        r = requests.get(
-            url,
-            params={
-                "lat": req.lat,
-                "lon": req.lng,
-                "appid": OPENWEATHER_API_KEY,
-                "units": "metric",
-                "lang": "vi",
-                "exclude": "minutely",
-            },
-            timeout=12,
-        )
-        if r.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"OpenWeather error: {r.status_code} {r.text}")
-        data = r.json()
-        current = data.get("current") or {}
-        snapshot = {
-            "temp": current.get("temp"),
-            "humidity": current.get("humidity"),
-            "wind_speed": current.get("wind_speed"),
-            "rain_1h": (current.get("rain") or {}).get("1h"),
-            "weather": (current.get("weather") or [])[:1],
-        }
+    try:
+        snapshot = req.weather_snapshot
+        if snapshot is None:
+            # reuse logic from /weather endpoint (call OpenWeather directly)
+            url = "https://api.openweathermap.org/data/3.0/onecall"
+            r = requests.get(
+                url,
+                params={
+                    "lat": req.lat,
+                    "lon": req.lng,
+                    "appid": OPENWEATHER_API_KEY,
+                    "units": "metric",
+                    "lang": "vi",
+                    "exclude": "minutely",
+                },
+                timeout=12,
+            )
+            if r.status_code != 200:
+                raise HTTPException(status_code=502, detail=f"OpenWeather error: {r.status_code} {r.text}")
+            data = r.json()
+            current = data.get("current") or {}
+            snapshot = {
+                "temp": current.get("temp"),
+                "humidity": current.get("humidity"),
+                "wind_speed": current.get("wind_speed"),
+                "rain_1h": (current.get("rain") or {}).get("1h"),
+                "weather": (current.get("weather") or [])[:1],
+            }
 
-    payload = {"lat": round(req.lat, 3), "lng": round(req.lng, 3), "snapshot": snapshot, "lang": "vi"}
-    input_hash = _sha256(_canonical_json(payload))
-    cached = _llm_cache_get("weather", input_hash, "vi")
-    if cached and not _is_cache_expired("weather", cached.get("updated_at")):
-        return {
-            "status": "success",
-            "cached": True,
-            "model": cached.get("model"),
-            "advice": cached.get("content_json"),
-            "summary_vi": cached.get("content_text"),
-        }
+        payload = {"lat": round(req.lat, 3), "lng": round(req.lng, 3), "snapshot": snapshot, "lang": "vi"}
+        input_hash = _sha256(_canonical_json(payload))
+        cached = _llm_cache_get("weather", input_hash, "vi")
+        if cached and not _is_cache_expired("weather", cached.get("updated_at")):
+            return {
+                "status": "success",
+                "cached": True,
+                "model": cached.get("model"),
+                "advice": cached.get("content_json"),
+                "summary_vi": cached.get("content_text"),
+            }
 
-    raw = _call_gemini_json(_WEATHER_SYSTEM_PROMPT, payload)
-    advice = _validate_advice_json(raw)
-    _llm_cache_upsert("weather", input_hash, "vi", GEMINI_MODEL, advice, advice.get("summary_vi"))
-    return {"status": "success", "cached": False, "model": GEMINI_MODEL, "advice": advice, "summary_vi": advice.get("summary_vi")}
+        raw = _call_gemini_json(_WEATHER_SYSTEM_PROMPT, payload)
+        advice = _validate_advice_json(raw)
+        _llm_cache_upsert("weather", input_hash, "vi", GEMINI_MODEL, advice, advice.get("summary_vi"))
+        return {"status": "success", "cached": False, "model": GEMINI_MODEL, "advice": advice, "summary_vi": advice.get("summary_vi")}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ /llm/advice/weather error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- Weather (OpenWeather) ---

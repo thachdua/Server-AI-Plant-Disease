@@ -201,7 +201,13 @@ def _compute_level(count7d: int, max_sev: int | None) -> int:
 
 # --- Outbreak areas: Phase 1 (province overlays) ---
 @app.get("/outbreaks/areas")
-def outbreak_areas(level: str = "province", since_days: int = 7):
+def outbreak_areas(
+    level: str = "province",
+    since_days: int = 7,
+    disease: Optional[str] = None,
+    min_severity: Optional[int] = None,
+    since: Optional[str] = None,
+):
     """
     Phase 1: Province-only overlays for Hue (46), Da Nang (48), Quang Nam (49), Quang Ngai (51).
     Uses public GIS polygons from dvhcvn repo (level1 polygons) and assigns points to provinces by bbox.
@@ -209,7 +215,7 @@ def outbreak_areas(level: str = "province", since_days: int = 7):
     if level != "province":
         raise HTTPException(status_code=400, detail="Only level=province supported in phase 1")
 
-    cache_key = f"outbreak_areas|level=province|since_days={since_days}"
+    cache_key = f"outbreak_areas|level=province|since_days={since_days}|d={disease}|minsev={min_severity}|since={since}"
     cached = cache_get(cache_key)
     if cached is not None:
         return cached
@@ -237,8 +243,16 @@ def outbreak_areas(level: str = "province", since_days: int = 7):
         })
 
     # Fetch recent outbreak points (public) from Supabase table
-    since_iso = (datetime.now().astimezone().replace(microsecond=0) - timedelta(days=max(1, min(since_days, 30)))).isoformat()
+    if since:
+        since_iso = since
+    else:
+        since_iso = (datetime.now().astimezone().replace(microsecond=0) - timedelta(days=max(1, min(since_days, 30)))).isoformat()
+
     q = supabase.table("outbreak_cases").select("lat,lng,disease,severity,reported_at").gte("reported_at", since_iso)
+    if disease:
+        q = q.ilike("disease", disease)
+    if min_severity is not None:
+        q = q.gte("severity", min_severity)
     resp = q.execute()
     points = resp.data or []
 
@@ -523,12 +537,32 @@ def weather_overview(lat: float, lng: float):
         # OpenWeather may return different keys depending on version/locale.
         # Common candidates: 'weather_overview', 'overview'
         overview_text = data.get("weather_overview") or data.get("overview") or data.get("summary")
+
+    def looks_vietnamese(s: str | None) -> bool:
+        if not isinstance(s, str) or not s.strip():
+            return False
+        vi_chars = "ăâđêôơưáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ"
+        t = s.lower()
+        return any(ch in t for ch in vi_chars)
+
+    def build_vi_advice() -> str:
+        # Lightweight Vietnamese advice (no external translation dependency)
+        parts: list[str] = []
+        parts.append("Gợi ý nhanh cho canh tác (tham khảo):")
+        parts.append("- Theo dõi lá/cành sau mưa hoặc độ ẩm cao; ưu tiên thông thoáng và vệ sinh vườn.")
+        parts.append("- Tránh tưới phun vào chiều tối; tưới gốc để hạn chế nấm bệnh.")
+        parts.append("- Nếu có gió mạnh, kiểm tra cây sau gió vì mầm bệnh dễ phát tán.")
+        parts.append("- Quan sát triệu chứng sớm để xử lý kịp thời, tránh lây lan.")
+        return "\n".join(parts)
+
+    overview_text_vi = overview_text if looks_vietnamese(overview_text) else build_vi_advice()
     out = {
         "status": "success",
         "lat": lat,
         "lng": lng,
         "overview": data,
         "overview_text": overview_text,
+        "overview_text_vi": overview_text_vi,
     }
     # cache longer; overview changes slower
     cache_set(cache_key, out, ttl_seconds=900)

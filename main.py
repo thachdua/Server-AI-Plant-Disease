@@ -34,6 +34,8 @@ GEMINI_API_KEYS = [
 if not GEMINI_API_KEYS and GEMINI_API_KEY:
     GEMINI_API_KEYS = [GEMINI_API_KEY]
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
+# Use a faster/cheaper model for chat to reduce latency.
+GEMINI_CHAT_MODEL = os.environ.get("GEMINI_CHAT_MODEL", "gemini-2.5-flash-lite")
 # Comma-separated fallbacks, used when Gemini returns 503 UNAVAILABLE.
 GEMINI_FALLBACK_MODELS = [
     m.strip() for m in os.environ.get("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash-lite,gemini-2.5-flash").split(",")
@@ -708,7 +710,14 @@ async def llm_chat(req: LLMChatRequest):
         prompt_lines.append("Trợ lý:")
         user_payload = {"chat": "\n".join(prompt_lines), "lang": "vi"}
 
-        raw = _call_gemini_json("Trả lời dạng JSON: {\"reply\":\"...\"}", user_payload)
+        # Temporarily swap model for chat for speed
+        global GEMINI_MODEL
+        original_model = GEMINI_MODEL
+        GEMINI_MODEL = GEMINI_CHAT_MODEL or GEMINI_MODEL
+        try:
+            raw = _call_gemini_json("Trả lời dạng JSON: {\"reply\":\"...\"}", user_payload)
+        finally:
+            GEMINI_MODEL = original_model
         if isinstance(raw, dict) and isinstance(raw.get("reply"), str) and raw["reply"].strip():
             return {"status": "success", "reply": raw["reply"].strip()}
 

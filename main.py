@@ -11,8 +11,6 @@ from supabase import create_client, Client
 import psycopg2
 from datetime import datetime
 from datetime import timedelta
-from google import genai
-from google.genai import types
 
 app = FastAPI()
 
@@ -27,7 +25,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
-_gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+GEMINI_API_VERSION = os.environ.get("GEMINI_API_VERSION", "v1beta")
 
 # --- Simple in-memory cache (per instance) ---
 _cache = {}  # key -> (expires_at_epoch, value)
@@ -147,32 +145,39 @@ def _llm_cache_upsert(kind: str, input_hash: str, lang: str, model: str, content
 
 
 def _call_gemini_json(system_prompt: str, user_payload: dict) -> dict:
-    if not _gemini_client:
+    if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="Missing GEMINI_API_KEY")
 
-    user_text = _canonical_json(user_payload)
-    resp = _gemini_client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=user_text,
-        config=types.GenerateContentConfig(
-            temperature=0.4,
-            system_instruction=system_prompt,
-            response_mime_type="application/json",
-            response_schema={
-                "type": "object",
-                "properties": {
-                    "summary_vi": {"type": "string"},
-                    "symptoms": {"type": "array", "items": {"type": "string"}},
-                    "causes": {"type": "array", "items": {"type": "string"}},
-                    "treatments": {"type": "array", "items": {"type": "string"}},
-                    "prevention": {"type": "array", "items": {"type": "string"}},
-                    "when_to_seek_expert": {"type": "string"},
-                },
-                "required": ["summary_vi", "symptoms", "causes", "treatments", "prevention", "when_to_seek_expert"],
-            },
-        ),
-    )
-    text = (resp.text or "").strip()
+    # Gemini Developer API (REST): generateContent
+    # https://generativelanguage.googleapis.com/{apiVersion}/models/{model}:generateContent?key=...
+    url = f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}/models/{GEMINI_MODEL}:generateContent"
+    body = {
+        "systemInstruction": {
+            "parts": [{"text": system_prompt}],
+        },
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": _canonical_json(user_payload)}],
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.4,
+            "responseMimeType": "application/json",
+        },
+    }
+
+    r = requests.post(url, params={"key": GEMINI_API_KEY}, json=body, timeout=20)
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Gemini error: {r.status_code} {r.text}")
+
+    data = r.json()
+    try:
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception:
+        raise HTTPException(status_code=502, detail=f"Gemini bad response: {str(data)[:300]}")
+
+    text = (text or "").strip()
     try:
         return json.loads(text)
     except Exception:

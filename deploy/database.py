@@ -8,9 +8,15 @@ import psycopg2
 from deploy.config import DB_CONFIG
 
 
+def _db_connect():
+    if not DB_CONFIG.get("user") or not DB_CONFIG.get("password"):
+        raise RuntimeError("Missing DB_USER or DB_PASSWORD environment variables")
+    return psycopg2.connect(**DB_CONFIG)
+
+
 def save_to_db(plant_name, disease_name, confidence, image_url, created_by=None):
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = _db_connect()
         cur = conn.cursor()
         try:
             query = """
@@ -40,7 +46,7 @@ def save_to_db(plant_name, disease_name, confidence, image_url, created_by=None)
 
 def llm_cache_get(kind: str, input_hash: str, lang: str = "vi"):
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = _db_connect()
         cur = conn.cursor()
         cur.execute(
             """
@@ -72,7 +78,7 @@ def llm_cache_upsert(
     kind: str, input_hash: str, lang: str, model: str, content_json, content_text: str | None
 ):
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = _db_connect()
         cur = conn.cursor()
         cur.execute(
             """

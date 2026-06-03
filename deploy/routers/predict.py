@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from typing import Optional
 from uuid import uuid4
 
 import requests
@@ -15,11 +16,16 @@ from deploy.config import (
     PREDICT_MAX_UPLOAD_BYTES,
     PREDICT_RATE_LIMIT_PER_MINUTE,
     PREDICT_REQUIRE_AUTH,
+    PREDICT_UNRECOGNIZED_THRESHOLD,
     supabase,
 )
 from deploy.rate_limit import check_rate_limit
 
 router = APIRouter()
+
+UNRECOGNIZED_MESSAGE = (
+    "xin lỗi, hiện tại ứng dụng của chúng tôi không nhận diện được loại cây này"
+)
 
 
 def infer_plant_from_disease_label(label: str | None) -> str | None:
@@ -46,10 +52,13 @@ def parse_confidence_percent(raw_confidence) -> str | None:
 
 def parse_confidence_value(raw_confidence) -> float | None:
     confidence_value = None
+    is_percent_string = False
     if isinstance(raw_confidence, (int, float)):
         confidence_value = float(raw_confidence)
     elif isinstance(raw_confidence, str):
-        s = raw_confidence.strip().replace("%", "")
+        raw = raw_confidence.strip()
+        is_percent_string = "%" in raw
+        s = raw.replace("%", "")
         try:
             confidence_value = float(s)
         except ValueError:
@@ -57,7 +66,7 @@ def parse_confidence_value(raw_confidence) -> float | None:
 
     if confidence_value is None:
         return None
-    if 0.0 <= confidence_value <= 1.0:
+    if not is_percent_string and 0.0 <= confidence_value <= 1.0:
         confidence_value *= 100.0
     return confidence_value
 
@@ -124,6 +133,47 @@ def _log_low_confidence_case(
         ).execute()
     except Exception as e:
         print(f"⚠️ low-confidence feedback log failed: {e}")
+
+
+@router.post("/ai-feedback/low-confidence")
+async def submit_low_confidence_feedback(
+    request: Request,
+    file: UploadFile = File(...),
+    selected_plant: Optional[str] = Form(None),
+    predicted_plant: Optional[str] = Form(None),
+    predicted_disease: Optional[str] = Form(None),
+    confidence: Optional[str] = Form(None),
+    user_note: Optional[str] = Form(None),
+):
+    try:
+        user_id = await run_in_threadpool(require_authenticated_user, request)
+        contents = await file.read()
+        content_type = _validate_image(contents)
+        confidence_value = parse_confidence_value(confidence)
+        image_url = await run_in_threadpool(
+            _upload_image_to_supabase, contents, content_type
+        )
+
+        supabase.table("ai_feedback_cases").insert(
+            {
+                "created_by": user_id,
+                "plant": (predicted_plant or selected_plant or "").strip() or None,
+                "predicted_disease": (predicted_disease or "").strip() or None,
+                "confidence": confidence_value,
+                "image_url": image_url,
+                "source": "predict",
+                "reason": "low_confidence",
+                "user_note": (user_note or "").strip() or None,
+                "review_status": "pending",
+            }
+        ).execute()
+
+        return {"status": "success", "image_url": image_url}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ /ai-feedback/low-confidence error: {e}")
+        raise HTTPException(status_code=500, detail="Could not save feedback")
 
 
 @router.post("/predict")
@@ -199,6 +249,16 @@ async def predict(
                 detail="Prediction service returned invalid confidence",
             )
         confidence_percent_str = f"{confidence_value:.2f}%"
+
+        if confidence_value < PREDICT_UNRECOGNIZED_THRESHOLD:
+            return {
+                "status": "unrecognized",
+                "message": UNRECOGNIZED_MESSAGE,
+                "plant": predicted_plant,
+                "disease": disease_name,
+                "confidence": confidence_percent_str,
+                "image_url": None,
+            }
 
         image_url = await run_in_threadpool(
             _upload_image_to_supabase, contents, content_type

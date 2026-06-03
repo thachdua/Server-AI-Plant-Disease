@@ -22,6 +22,7 @@ class PredictHelperTests(unittest.TestCase):
         self.assertEqual(parse_confidence_percent(0.8234), "82.34%")
         self.assertEqual(parse_confidence_percent(82.345), "82.34%")
         self.assertEqual(parse_confidence_percent("91.2%"), "91.20%")
+        self.assertEqual(parse_confidence_percent("1.00%"), "1.00%")
         self.assertIsNone(parse_confidence_percent("unknown"))
 
     def test_validate_image_accepts_jpeg(self):

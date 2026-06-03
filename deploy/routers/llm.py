@@ -17,9 +17,15 @@ from deploy.gemini import (
     diagnosis_fallback_advice,
     is_cache_expired,
     validate_advice_json,
+    validate_care_plan_json,
 )
-from deploy.models import LLMAdviceDiagnosisRequest, LLMAdviceWeatherRequest, LLMChatRequest
-from deploy.prompts import DIAGNOSIS_SYSTEM_PROMPT, WEATHER_SYSTEM_PROMPT
+from deploy.models import (
+    LLMCarePlanDiagnosisRequest,
+    LLMAdviceDiagnosisRequest,
+    LLMAdviceWeatherRequest,
+    LLMChatRequest,
+)
+from deploy.prompts import CARE_PLAN_SYSTEM_PROMPT, DIAGNOSIS_SYSTEM_PROMPT, WEATHER_SYSTEM_PROMPT
 from deploy.rate_limit import check_rate_limit
 from deploy.utils import canonical_json, sha256
 from deploy.validation import validate_coordinates
@@ -183,6 +189,9 @@ async def llm_advice_weather(req: LLMAdviceWeatherRequest, request: Request):
         payload = {
             "lat": round(req.lat, 3),
             "lng": round(req.lng, 3),
+            "plant": req.plant,
+            "disease": req.disease,
+            "care_context": req.care_context,
             "snapshot": snapshot,
             "lang": "vi",
         }
@@ -227,4 +236,56 @@ async def llm_advice_weather(req: LLMAdviceWeatherRequest, request: Request):
         raise
     except Exception as e:
         print(f"❌ /llm/advice/weather error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/llm/care-plan/diagnosis")
+async def llm_care_plan_diagnosis(req: LLMCarePlanDiagnosisRequest, request: Request):
+    try:
+        check_rate_limit(request, "llm", LLM_RATE_LIMIT_PER_MINUTE)
+        disease = (req.disease or "").strip()
+        if not disease:
+            raise HTTPException(status_code=400, detail="disease is required")
+
+        payload = {
+            "plant": req.plant,
+            "disease": disease,
+            "confidence": req.confidence,
+            "user_note": req.user_note,
+            "weather_snapshot": req.weather_snapshot,
+            "lang": "vi",
+        }
+        input_hash = sha256(canonical_json(payload))
+        cached = await run_in_threadpool(llm_cache_get, "care_plan", input_hash, "vi")
+        if cached:
+            return {
+                "status": "success",
+                "cached": True,
+                "model": cached.get("model"),
+                "care_plan": cached.get("content_json"),
+                "summary_vi": cached.get("content_text"),
+            }
+
+        raw = await run_in_threadpool(call_gemini_json, CARE_PLAN_SYSTEM_PROMPT, payload)
+        care_plan = validate_care_plan_json(raw)
+        await run_in_threadpool(
+            llm_cache_upsert,
+            "care_plan",
+            input_hash,
+            "vi",
+            GEMINI_MODEL,
+            care_plan,
+            care_plan.get("summary_vi"),
+        )
+        return {
+            "status": "success",
+            "cached": False,
+            "model": GEMINI_MODEL,
+            "care_plan": care_plan,
+            "summary_vi": care_plan.get("summary_vi"),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ /llm/care-plan/diagnosis error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

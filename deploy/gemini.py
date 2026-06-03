@@ -165,6 +165,101 @@ def validate_advice_json(advice: dict) -> dict:
     return advice
 
 
+def validate_care_plan_json(plan: dict) -> dict:
+    if not isinstance(plan, dict):
+        raise HTTPException(status_code=502, detail="Care plan output is not an object")
+
+    summary = plan.get("summary_vi")
+    if not isinstance(summary, str) or not summary.strip():
+        summary = "Lịch chăm sóc tham khảo sau chẩn đoán: theo dõi cây, giảm ẩm và xử lý an toàn."
+
+    allowed_categories = {
+        "watering",
+        "misting",
+        "fertilizing",
+        "treatment",
+        "inspection",
+        "rotation",
+        "repotting",
+        "cleanup",
+    }
+    allowed_repeat = {"none", "daily", "weekly", "monthly", "yearly"}
+    tasks = []
+    raw_tasks = plan.get("tasks")
+    if isinstance(raw_tasks, list):
+        for raw in raw_tasks[:12]:
+            if not isinstance(raw, dict):
+                continue
+            title = str(raw.get("title") or "").strip()
+            if not title:
+                continue
+            detail = str(raw.get("detail") or "").strip()
+            category = str(raw.get("category") or "inspection").strip().lower()
+            if category not in allowed_categories:
+                category = "inspection"
+            repeat_rule = str(raw.get("repeat_rule") or "none").strip().lower()
+            if repeat_rule not in allowed_repeat:
+                repeat_rule = "none"
+            try:
+                due_in_days = int(raw.get("due_in_days") or 0)
+            except Exception:
+                due_in_days = 0
+            due_in_days = max(0, min(due_in_days, 365))
+            try:
+                reminder_hour = int(raw.get("reminder_hour") or 7)
+            except Exception:
+                reminder_hour = 7
+            reminder_hour = max(6, min(reminder_hour, 20))
+            tasks.append(
+                {
+                    "title": title[:120],
+                    "detail": detail[:500],
+                    "category": category,
+                    "due_in_days": due_in_days,
+                    "repeat_rule": repeat_rule,
+                    "reminder_hour": reminder_hour,
+                }
+            )
+
+    if not tasks:
+        tasks = [
+            {
+                "title": "Kiểm tra triệu chứng",
+                "detail": "Quan sát lá/cành bị bệnh, chụp lại nếu vết bệnh lan nhanh.",
+                "category": "inspection",
+                "due_in_days": 0,
+                "repeat_rule": "daily",
+                "reminder_hour": 7,
+            },
+            {
+                "title": "Tưới gốc vừa đủ",
+                "detail": "Tránh tưới phun lên lá, đặc biệt vào chiều tối.",
+                "category": "watering",
+                "due_in_days": 1,
+                "repeat_rule": "none",
+                "reminder_hour": 7,
+            },
+        ]
+
+    checklist = plan.get("checklist")
+    if not isinstance(checklist, list):
+        checklist = []
+    checklist = [str(x).strip() for x in checklist if str(x).strip()][:12]
+    if not checklist:
+        checklist = ["Cắt bỏ lá bệnh nếu có", "Giữ vườn thông thoáng", "Theo dõi sau mưa/ẩm cao"]
+
+    safety_note = plan.get("safety_note")
+    if not isinstance(safety_note, str) or not safety_note.strip():
+        safety_note = "Thông tin chỉ mang tính tham khảo; không tự ý dùng hoá chất liều cao."
+
+    return {
+        "summary_vi": summary.strip(),
+        "tasks": tasks,
+        "checklist": checklist,
+        "safety_note": safety_note.strip(),
+    }
+
+
 def diagnosis_fallback_advice(
     plant: str | None, disease: str, confidence: float | None
 ) -> dict:

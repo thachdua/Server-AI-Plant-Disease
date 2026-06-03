@@ -31,3 +31,13 @@ Bạn chọn **1** trong 2 hướng:
 - User thường được tạo và xem bản ghi của chính mình.
 - Expert được xem và cập nhật workflow/review/reply.
 - Nếu bạn từng chạy bản cũ của `004_reports_and_consultations.sql`, hãy chạy thêm `sql/010_harden_workflow_updates.sql` để chặn user thường PATCH các trường workflow/expert từ custom client.
+
+## Feature migrations 011-016
+Chạy theo đúng thứ tự sau sau khi đã có `profiles`, `report_cases`, `consultation_requests` và helper `public.is_expert`:
+
+1. `sql/011_ai_feedback_cases.sql`: dữ liệu retrain cho dự đoán sai/độ tin cậy thấp.
+2. `sql/012_app_feedback.sql`: góp ý/lỗi app/chatbot/danh mục.
+3. `sql/013_chat_consent_sessions.sql`: lưu chat khi user đồng ý.
+4. `sql/014_care_plants_tasks.sql`: bộ sưu tập cây, care plan, task/checklist.
+5. `sql/015_plant_knowledge_resources.sql`: knowledge/resources/bookmark.
+6. `sql/016_consultation_workflow.sql`: consent, questionnaire, SLA và preference thông báo cho tư vấn chuyên gia.

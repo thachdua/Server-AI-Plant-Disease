@@ -38,10 +38,17 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(response.json()["detail"], "severity must be between 1 and 5")
 
     def test_outbreak_areas_rejects_invalid_since_days_before_supabase(self):
-        response = self.client.get("/outbreaks/areas", params={"since_days": 90})
+        response = self.client.get("/outbreaks/areas", params={"since_days": 3651})
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["detail"], "since_days must be between 1 and 30")
+        self.assertEqual(response.json()["detail"], "since_days must be between 1 and 3650")
+
+    def test_outbreak_areas_accepts_ten_year_window_before_querying(self):
+        with patch("deploy.routers.outbreaks.requests.get") as get:
+            get.return_value.status_code = 502
+            response = self.client.get("/outbreaks/areas", params={"since_days": 3650})
+
+        self.assertNotEqual(response.status_code, 400)
 
     def test_llm_diagnosis_requires_disease(self):
         response = self.client.post(

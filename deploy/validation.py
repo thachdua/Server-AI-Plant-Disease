@@ -38,6 +38,6 @@ def validate_since(value: str | None) -> None:
 
 
 def validate_since_days(value: int) -> int:
-    if value < 1 or value > 30:
-        raise HTTPException(status_code=400, detail="since_days must be between 1 and 30")
+    if value < 1 or value > 3650:
+        raise HTTPException(status_code=400, detail="since_days must be between 1 and 3650")
     return value

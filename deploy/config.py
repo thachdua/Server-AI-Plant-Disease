@@ -31,6 +31,7 @@ HF_API_URL = os.environ.get(
 PREDICT_REQUIRE_AUTH = _env_bool("PREDICT_REQUIRE_AUTH", default=False)
 PREDICT_MAX_UPLOAD_BYTES = _env_int("PREDICT_MAX_UPLOAD_BYTES", 5 * 1024 * 1024)
 PREDICT_RATE_LIMIT_PER_MINUTE = _env_int("PREDICT_RATE_LIMIT_PER_MINUTE", 20)
+PREDICT_LOW_CONFIDENCE_THRESHOLD = _env_int("PREDICT_LOW_CONFIDENCE_THRESHOLD", 70)
 LLM_RATE_LIMIT_PER_MINUTE = _env_int("LLM_RATE_LIMIT_PER_MINUTE", 10)
 LLM_CHAT_MAX_CHARS = _env_int("LLM_CHAT_MAX_CHARS", 4000)
 WEATHER_RATE_LIMIT_PER_MINUTE = _env_int("WEATHER_RATE_LIMIT_PER_MINUTE", 60)
@@ -141,6 +142,7 @@ def config_status() -> dict:
         "require_auth": PREDICT_REQUIRE_AUTH,
         "max_upload_bytes": PREDICT_MAX_UPLOAD_BYTES,
         "rate_limit_per_minute": PREDICT_RATE_LIMIT_PER_MINUTE,
+        "low_confidence_threshold": PREDICT_LOW_CONFIDENCE_THRESHOLD,
     }
     limits = {
         "llm_rate_limit_per_minute": LLM_RATE_LIMIT_PER_MINUTE,

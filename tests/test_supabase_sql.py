@@ -38,6 +38,21 @@ class SupabaseSQLTests(unittest.TestCase):
         self.assertIn('create policy "report_cases_update_expert"', sql)
         self.assertIn('create policy "consult_update_expert"', sql)
 
+    def test_new_feature_migrations_exist_with_rls(self):
+        expected = {
+            "011_ai_feedback_cases.sql": "ai_feedback_cases",
+            "012_app_feedback.sql": "app_feedback",
+            "013_chat_consent_sessions.sql": "chat_sessions",
+            "014_care_plants_tasks.sql": "care_tasks",
+            "015_plant_knowledge_resources.sql": "plant_resources",
+            "016_consultation_workflow.sql": "expected_reply_at",
+        }
+        for filename, marker in expected.items():
+            sql = (ROOT / f"supabase/sql/{filename}").read_text()
+            self.assertIn(marker, sql)
+            if filename != "016_consultation_workflow.sql":
+                self.assertIn("enable row level security", sql.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

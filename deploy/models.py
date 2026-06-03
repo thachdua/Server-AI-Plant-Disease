@@ -21,9 +21,20 @@ class LLMAdviceDiagnosisRequest(BaseModel):
 class LLMAdviceWeatherRequest(BaseModel):
     lat: float
     lng: float
+    plant: Optional[str] = None
+    disease: Optional[str] = None
+    care_context: Optional[Dict[str, Any]] = None
     weather_snapshot: Optional[Dict[str, Any]] = None
 
 
 class LLMChatRequest(BaseModel):
     messages: List[dict]
     mode: Optional[str] = None
+
+
+class LLMCarePlanDiagnosisRequest(BaseModel):
+    plant: Optional[str] = None
+    disease: str
+    confidence: Optional[float] = None
+    user_note: Optional[str] = None
+    weather_snapshot: Optional[Dict[str, Any]] = None

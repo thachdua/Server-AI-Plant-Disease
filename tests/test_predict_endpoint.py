@@ -77,6 +77,42 @@ class PredictEndpointTests(unittest.TestCase):
             "Prediction service returned incomplete result",
         )
 
+    def test_predict_logs_low_confidence_when_authenticated(self):
+        hf_response = Mock()
+        hf_response.status_code = 200
+        hf_response.json.return_value = {
+            "status": "success",
+            "plant": "Tomato",
+            "disease": "Tomato___Late_blight",
+            "confidence": 0.42,
+        }
+        table = Mock()
+        insert_result = Mock()
+        table.insert.return_value = insert_result
+        fake_supabase = Mock()
+        fake_supabase.table.return_value = table
+
+        with patch("deploy.routers.predict.requests.post", return_value=hf_response):
+            with patch("deploy.routers.predict.optional_authenticated_user", return_value="user-1"):
+                with patch("deploy.routers.predict.print"):
+                    with patch(
+                        "deploy.routers.predict._upload_image_to_supabase",
+                        return_value="https://example.com/predictions/image.jpg",
+                    ):
+                        with patch("deploy.routers.predict.supabase", fake_supabase):
+                            response = self.client.post(
+                                "/predict",
+                                data={"selected_plant": "Tomato"},
+                                files={"file": ("leaf.jpg", jpeg_bytes(), "image/jpeg")},
+                            )
+
+        self.assertEqual(response.status_code, 200)
+        fake_supabase.table.assert_called_once_with("ai_feedback_cases")
+        table.insert.assert_called_once()
+        payload = table.insert.call_args.args[0]
+        self.assertEqual(payload["reason"], "low_confidence")
+        self.assertEqual(payload["confidence"], 42.0)
+
 
 if __name__ == "__main__":
     unittest.main()

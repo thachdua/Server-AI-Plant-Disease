@@ -11,6 +11,7 @@ from starlette.concurrency import run_in_threadpool
 from deploy.auth import optional_authenticated_user, require_authenticated_user
 from deploy.config import (
     HF_API_URL,
+    PREDICT_LOW_CONFIDENCE_THRESHOLD,
     PREDICT_MAX_UPLOAD_BYTES,
     PREDICT_RATE_LIMIT_PER_MINUTE,
     PREDICT_REQUIRE_AUTH,
@@ -37,6 +38,13 @@ def infer_plant_from_disease_label(label: str | None) -> str | None:
 
 
 def parse_confidence_percent(raw_confidence) -> str | None:
+    confidence_value = parse_confidence_value(raw_confidence)
+    if confidence_value is None:
+        return None
+    return f"{confidence_value:.2f}%"
+
+
+def parse_confidence_value(raw_confidence) -> float | None:
     confidence_value = None
     if isinstance(raw_confidence, (int, float)):
         confidence_value = float(raw_confidence)
@@ -51,7 +59,7 @@ def parse_confidence_percent(raw_confidence) -> str | None:
         return None
     if 0.0 <= confidence_value <= 1.0:
         confidence_value *= 100.0
-    return f"{confidence_value:.2f}%"
+    return confidence_value
 
 
 def _validate_image(contents: bytes) -> str:
@@ -89,6 +97,33 @@ def _upload_image_to_supabase(contents: bytes, content_type: str) -> str:
         file_name, contents, {"content-type": content_type}
     )
     return supabase.storage.from_("plant-images").get_public_url(file_name)
+
+
+def _log_low_confidence_case(
+    *,
+    user_id: str | None,
+    plant: str | None,
+    disease: str,
+    confidence: float,
+    image_url: str,
+) -> None:
+    if not user_id or confidence >= PREDICT_LOW_CONFIDENCE_THRESHOLD:
+        return
+    try:
+        supabase.table("ai_feedback_cases").insert(
+            {
+                "created_by": user_id,
+                "plant": plant,
+                "predicted_disease": disease,
+                "confidence": confidence,
+                "image_url": image_url,
+                "source": "predict",
+                "reason": "low_confidence",
+                "review_status": "pending",
+            }
+        ).execute()
+    except Exception as e:
+        print(f"⚠️ low-confidence feedback log failed: {e}")
 
 
 @router.post("/predict")
@@ -157,15 +192,24 @@ async def predict(
             or selected_plant
         )
 
-        confidence_percent_str = parse_confidence_percent(result.get("confidence"))
-        if confidence_percent_str is None:
+        confidence_value = parse_confidence_value(result.get("confidence"))
+        if confidence_value is None:
             raise HTTPException(
                 status_code=502,
                 detail="Prediction service returned invalid confidence",
             )
+        confidence_percent_str = f"{confidence_value:.2f}%"
 
         image_url = await run_in_threadpool(
             _upload_image_to_supabase, contents, content_type
+        )
+        await run_in_threadpool(
+            _log_low_confidence_case,
+            user_id=user_id,
+            plant=predicted_plant,
+            disease=disease_name,
+            confidence=confidence_value,
+            image_url=image_url,
         )
 
         return {

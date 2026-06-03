@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: plant-disease-detector-api
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: DB_HOST
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        value: postgres
+      - key: DB_PORT
+        value: "6543"
+      - key: DB_SSLMODE
+        value: require
+      - key: HF_API_URL
+        sync: false
+      - key: PREDICT_REQUIRE_AUTH
+        value: "false"
+      - key: PREDICT_MAX_UPLOAD_BYTES
+        value: "5242880"
+      - key: PREDICT_RATE_LIMIT_PER_MINUTE
+        value: "20"
+      - key: LLM_RATE_LIMIT_PER_MINUTE
+        value: "10"
+      - key: LLM_CHAT_MAX_CHARS
+        value: "4000"
+      - key: WEATHER_RATE_LIMIT_PER_MINUTE
+        value: "60"
+      - key: OPENWEATHER_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false

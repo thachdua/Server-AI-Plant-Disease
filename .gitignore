@@ -1,4 +1,25 @@
 __pycache__/
-*.pyc
+*.py[cod]
 .env
+.env.*
+!.env.example
 .DS_Store
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# Python virtual environments
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+
+# Xcode / iOS local state
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.moved-aside
+*.xccheckout
+*.xcscmblueprint

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import requests
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from deploy.cache import cache_get, cache_set
-from deploy.config import OPENWEATHER_API_KEY
+from deploy.config import OPENWEATHER_API_KEY, WEATHER_RATE_LIMIT_PER_MINUTE
+from deploy.rate_limit import check_rate_limit
+from deploy.validation import validate_coordinates
 
 router = APIRouter()
 
 
 @router.get("/weather")
-def weather(lat: float, lng: float):
+def weather(lat: float, lng: float, request: Request):
+    check_rate_limit(request, "weather", WEATHER_RATE_LIMIT_PER_MINUTE)
+    validate_coordinates(lat, lng)
     if not OPENWEATHER_API_KEY:
         raise HTTPException(status_code=500, detail="Missing OPENWEATHER_API_KEY")
 
@@ -104,7 +108,9 @@ def weather(lat: float, lng: float):
 
 
 @router.get("/weather/overview")
-def weather_overview(lat: float, lng: float):
+def weather_overview(lat: float, lng: float, request: Request):
+    check_rate_limit(request, "weather", WEATHER_RATE_LIMIT_PER_MINUTE)
+    validate_coordinates(lat, lng)
     if not OPENWEATHER_API_KEY:
         raise HTTPException(status_code=500, detail="Missing OPENWEATHER_API_KEY")
 

@@ -32,7 +32,7 @@ Vào **Render → Environment** và thêm:
 
 ```
 SUPABASE_URL=https://<project-ref>.supabase.co
-SUPABASE_KEY=<anon_key>
+SUPABASE_SERVICE_ROLE_KEY=<service_role_key_backend_only>
 DB_USER=postgres.<project-ref>
 DB_PASSWORD=<database_password>
 DB_HOST=aws-1-ap-southeast-1.pooler.supabase.com

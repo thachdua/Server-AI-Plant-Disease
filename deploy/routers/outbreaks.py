@@ -7,6 +7,12 @@ from fastapi import APIRouter, HTTPException
 from deploy.cache import cache_get, cache_set
 from deploy.config import supabase
 from deploy.geo import compute_level, point_in_bbox, point_in_multipolygon
+from deploy.validation import (
+    validate_limit,
+    validate_severity,
+    validate_since,
+    validate_since_days,
+)
 
 router = APIRouter()
 
@@ -18,6 +24,10 @@ def outbreaks(
     since: Optional[str] = None,
     limit: int = 500,
 ):
+    validate_severity(severity)
+    validate_since(since)
+    limit = validate_limit(limit)
+
     cache_key = f"outbreaks|d={disease}|sev={severity}|since={since}|l={limit}"
     cached = cache_get(cache_key)
     if cached is not None:
@@ -32,7 +42,7 @@ def outbreaks(
         q = q.eq("severity", severity)
     if since:
         q = q.gte("reported_at", since)
-    q = q.order("reported_at", desc=True).limit(min(max(limit, 1), 1000))
+    q = q.order("reported_at", desc=True).limit(limit)
 
     resp = q.execute()
     items = resp.data or []
@@ -50,6 +60,9 @@ def outbreak_areas(
 ):
     if level != "province":
         raise HTTPException(status_code=400, detail="Only level=province supported in phase 1")
+    since_days = validate_since_days(since_days)
+    validate_severity(min_severity, field="min_severity")
+    validate_since(since)
 
     cache_key = (
         f"outbreak_areas|level=province|since_days={since_days}|d={disease}"
@@ -103,7 +116,7 @@ def outbreak_areas(
     else:
         since_iso = (
             datetime.now().astimezone().replace(microsecond=0)
-            - timedelta(days=max(1, min(since_days, 30)))
+            - timedelta(days=since_days)
         ).isoformat()
 
     q = supabase.table("outbreak_cases").select("lat,lng,disease,severity,reported_at").gte(

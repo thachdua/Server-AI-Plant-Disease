@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 import requests
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 from deploy.config import SUPABASE_KEY, SUPABASE_URL
 
@@ -19,6 +21,10 @@ def extract_bearer_token(request: Request):
 
 def get_user_id_from_supabase(access_token: str):
     """Best-effort: validate access token and return user id."""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        raise RuntimeError(
+            "Missing required environment variable: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY"
+        )
     try:
         r = requests.get(
             f"{SUPABASE_URL}/auth/v1/user",
@@ -35,3 +41,24 @@ def get_user_id_from_supabase(access_token: str):
         return data.get("id")
     except Exception:
         return None
+
+
+def require_authenticated_user(request: Request) -> str:
+    access_token = extract_bearer_token(request)
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+
+    user_id = get_user_id_from_supabase(access_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return user_id
+
+
+def optional_authenticated_user(request: Request) -> str | None:
+    access_token = extract_bearer_token(request)
+    if not access_token:
+        return None
+    user_id = get_user_id_from_supabase(access_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return user_id

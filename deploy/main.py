@@ -15,7 +15,7 @@ async def runtime_error_handler(_, exc: RuntimeError):
             content={
                 "status": "error",
                 "message": message,
-                "hint": "Set SUPABASE_URL, SUPABASE_KEY, DB_USER, DB_PASSWORD on Render.",
+                "hint": "Set SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, DB_USER, DB_PASSWORD on Render.",
             },
         )
     return JSONResponse(status_code=500, content={"status": "error", "message": message})

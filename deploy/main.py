@@ -2,8 +2,10 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from deploy.routers import auth_pages, health, history, llm, outbreaks, predict, weather
+from deploy.security import security_middleware
 
 app = FastAPI(title="Plant Disease Detector API")
+app.middleware("http")(security_middleware)
 
 
 @app.exception_handler(RuntimeError)

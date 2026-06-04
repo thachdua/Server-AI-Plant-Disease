@@ -56,8 +56,7 @@ class ValidationTests(unittest.TestCase):
             json={"disease": "   "},
         )
 
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["detail"], "disease is required")
+        self.assertEqual(response.status_code, 422)
 
 
 if __name__ == "__main__":

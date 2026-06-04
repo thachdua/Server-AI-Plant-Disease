@@ -62,6 +62,10 @@ Các chức năng thời tiết/AI cần thêm:
 
 Backend hỗ trợ cấu hình:
 
+- `SECURITY_GLOBAL_RATE_LIMIT_PER_MINUTE=180`: giới hạn tổng request/phút theo IP ở middleware. Đây là lớp giảm spam/app-level abuse; DDoS lớn vẫn nên chặn thêm bằng Cloudflare/Render/WAF.
+- `SECURITY_MAX_REQUEST_BYTES=5767168`: giới hạn body request tổng thể.
+- `SECURITY_MAX_JSON_BYTES=262144`: giới hạn body JSON cho các endpoint LLM/history.
+- `SECURITY_MAX_IMAGE_PIXELS=20000000`: chặn ảnh quá lớn/decompression bomb trước khi xử lý.
 - `PREDICT_REQUIRE_AUTH=false`: cho phép khách scan, nhưng nếu app gửi token thì token vẫn được xác thực.
 - `PREDICT_REQUIRE_AUTH=true`: chỉ user đăng nhập Supabase mới được gọi `/predict`.
 - `PREDICT_MAX_UPLOAD_BYTES=5242880`: giới hạn ảnh 5 MB.
@@ -72,6 +76,8 @@ Backend hỗ trợ cấu hình:
 
 Khi nộp/demo public, nên bật `PREDICT_REQUIRE_AUTH=true` nếu không cần chế độ khách scan.
 
+Middleware backend cũng chặn `Content-Type` sai (`application/json` cho LLM/history, `multipart/form-data` cho upload ảnh), chặn path bất thường, thêm security headers, và re-encode ảnh upload thành JPEG sạch trước khi gửi sang Hugging Face/Supabase để loại metadata/payload lạ.
+
 ## Health check
 
 - `GET /health`: kiểm tra backend còn sống, không phụ thuộc dịch vụ ngoài.
@@ -81,7 +87,7 @@ Trên Render có thể dùng `/health` cho uptime check. Trước khi demo, mở
 
 ## Input validation
 
-Backend trả `400` trước khi gọi dịch vụ ngoài nếu tọa độ không hợp lệ, `severity` ngoài khoảng 1-5, `since_days` ngoài 1-30, hoặc prompt/tư vấn thiếu dữ liệu bắt buộc. Backend trả `429` khi vượt rate limit theo IP.
+Backend trả `400/422` trước khi gọi dịch vụ ngoài nếu tọa độ không hợp lệ, `severity` ngoài khoảng 1-5, `since_days` ngoài khoảng cho phép, schema JSON sai, field lạ, hoặc prompt/tư vấn thiếu dữ liệu bắt buộc. Backend trả `413` khi payload quá lớn, `415` khi content-type/upload type sai, và `429` khi vượt rate limit theo IP.
 
 ## Cấu hình iOS
 

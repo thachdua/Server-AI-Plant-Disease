@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from ipaddress import ip_address
 
 from fastapi import HTTPException, Request
 
@@ -10,9 +11,16 @@ _hits: dict[str, list[float]] = {}
 def client_key(request: Request) -> str:
     forwarded_for = request.headers.get("x-forwarded-for")
     if forwarded_for:
-        return forwarded_for.split(",", 1)[0].strip()
+        candidate = forwarded_for.split(",", 1)[0].strip()
+        try:
+            return str(ip_address(candidate))
+        except ValueError:
+            return "invalid-forwarded-for"
     if request.client:
-        return request.client.host
+        try:
+            return str(ip_address(request.client.host))
+        except ValueError:
+            return request.client.host[:80]
     return "unknown"
 
 

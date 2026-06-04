@@ -41,8 +41,8 @@ async def llm_chat(req: LLMChatRequest, request: Request):
         convo = []
         total_chars = 0
         for m in msgs:
-            role = (m.get("role") or "").strip()
-            text = (m.get("text") or "").strip()
+            role = m.role.strip()
+            text = m.text.strip()
             if not text:
                 continue
             total_chars += len(text)

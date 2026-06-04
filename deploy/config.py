@@ -36,6 +36,12 @@ PREDICT_UNRECOGNIZED_THRESHOLD = _env_int("PREDICT_UNRECOGNIZED_THRESHOLD", 60)
 LLM_RATE_LIMIT_PER_MINUTE = _env_int("LLM_RATE_LIMIT_PER_MINUTE", 10)
 LLM_CHAT_MAX_CHARS = _env_int("LLM_CHAT_MAX_CHARS", 4000)
 WEATHER_RATE_LIMIT_PER_MINUTE = _env_int("WEATHER_RATE_LIMIT_PER_MINUTE", 60)
+SECURITY_GLOBAL_RATE_LIMIT_PER_MINUTE = _env_int("SECURITY_GLOBAL_RATE_LIMIT_PER_MINUTE", 180)
+SECURITY_MAX_JSON_BYTES = _env_int("SECURITY_MAX_JSON_BYTES", 256 * 1024)
+SECURITY_MAX_REQUEST_BYTES = _env_int(
+    "SECURITY_MAX_REQUEST_BYTES", PREDICT_MAX_UPLOAD_BYTES + 512 * 1024
+)
+SECURITY_MAX_IMAGE_PIXELS = _env_int("SECURITY_MAX_IMAGE_PIXELS", 20_000_000)
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY_SOURCE = (
@@ -150,6 +156,10 @@ def config_status() -> dict:
         "llm_rate_limit_per_minute": LLM_RATE_LIMIT_PER_MINUTE,
         "llm_chat_max_chars": LLM_CHAT_MAX_CHARS,
         "weather_rate_limit_per_minute": WEATHER_RATE_LIMIT_PER_MINUTE,
+        "security_global_rate_limit_per_minute": SECURITY_GLOBAL_RATE_LIMIT_PER_MINUTE,
+        "security_max_json_bytes": SECURITY_MAX_JSON_BYTES,
+        "security_max_request_bytes": SECURITY_MAX_REQUEST_BYTES,
+        "security_max_image_pixels": SECURITY_MAX_IMAGE_PIXELS,
     }
     database = {
         "host_configured": bool(DB_CONFIG.get("host")),

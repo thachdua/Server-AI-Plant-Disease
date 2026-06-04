@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import io
+import warnings
 from typing import Optional
 from uuid import uuid4
 
 import requests
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from PIL import Image, UnidentifiedImageError
+from PIL.Image import DecompressionBombError, DecompressionBombWarning
 from starlette.concurrency import run_in_threadpool
 
 from deploy.auth import optional_authenticated_user, require_authenticated_user
@@ -17,15 +19,49 @@ from deploy.config import (
     PREDICT_RATE_LIMIT_PER_MINUTE,
     PREDICT_REQUIRE_AUTH,
     PREDICT_UNRECOGNIZED_THRESHOLD,
+    SECURITY_MAX_IMAGE_PIXELS,
     supabase,
 )
 from deploy.rate_limit import check_rate_limit
 
 router = APIRouter()
+Image.MAX_IMAGE_PIXELS = SECURITY_MAX_IMAGE_PIXELS
 
 UNRECOGNIZED_MESSAGE = (
     "xin lỗi, hiện tại ứng dụng của chúng tôi không nhận diện được loại cây này"
 )
+
+
+def _supabase_feedback_error_detail(error: Exception) -> str:
+    text = str(error)
+    lowered = text.lower()
+    if "ai_feedback_cases" in lowered and (
+        "does not exist" in lowered
+        or "not found" in lowered
+        or "could not find" in lowered
+        or "relation" in lowered
+    ):
+        return (
+            "Supabase chưa có bảng ai_feedback_cases. "
+            "Hãy chạy supabase/sql/011_ai_feedback_cases.sql trước."
+        )
+    if "plant-images" in lowered or "bucket" in lowered:
+        return (
+            "Supabase Storage chưa có bucket plant-images hoặc backend không có quyền upload. "
+            "Hãy tạo bucket plant-images và kiểm tra SUPABASE_SERVICE_ROLE_KEY trên Render."
+        )
+    if (
+        "row-level security" in lowered
+        or "rls" in lowered
+        or "permission denied" in lowered
+        or "violates row-level security" in lowered
+        or "42501" in lowered
+    ):
+        return (
+            "Backend không có quyền ghi Supabase. "
+            "Hãy dùng SUPABASE_SERVICE_ROLE_KEY trên Render hoặc kiểm tra RLS của bảng ai_feedback_cases."
+        )
+    return "Could not save feedback"
 
 
 def infer_plant_from_disease_label(label: str | None) -> str | None:
@@ -72,27 +108,58 @@ def parse_confidence_value(raw_confidence) -> float | None:
 
 
 def _validate_image(contents: bytes) -> str:
+    return _sanitize_image(contents)[1]
+
+
+def _sanitize_image(contents: bytes) -> tuple[bytes, str]:
     if not contents:
         raise HTTPException(status_code=400, detail="Missing image file")
     if len(contents) > PREDICT_MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="Image is larger than allowed")
 
     try:
-        with Image.open(io.BytesIO(contents)) as image:
-            image.verify()
-            fmt = (image.format or "").lower()
-    except UnidentifiedImageError:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DecompressionBombWarning)
+            with Image.open(io.BytesIO(contents)) as image:
+                image.verify()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DecompressionBombWarning)
+            with Image.open(io.BytesIO(contents)) as image:
+                fmt = (image.format or "").lower()
+                image.load()
+                width, height = image.size
+                if width < 1 or height < 1:
+                    raise HTTPException(status_code=400, detail="Invalid image dimensions")
+                if width * height > SECURITY_MAX_IMAGE_PIXELS:
+                    raise HTTPException(status_code=413, detail="Image dimensions are larger than allowed")
+
+                safe = image.convert("RGB")
+                output = io.BytesIO()
+                safe.save(output, format="JPEG", quality=90, optimize=True)
+                sanitized = output.getvalue()
+                if len(sanitized) > PREDICT_MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="Sanitized image is larger than allowed")
+
+                if fmt not in {"jpeg", "jpg", "png", "webp"}:
+                    raise HTTPException(status_code=400, detail="Only JPEG, PNG, or WebP images are supported")
+                return sanitized, "image/jpeg"
+
+    except HTTPException:
+        raise
+    except (UnidentifiedImageError, DecompressionBombError, DecompressionBombWarning):
         raise HTTPException(status_code=400, detail="Uploaded file is not a supported image")
     except Exception:
         raise HTTPException(status_code=400, detail="Could not read uploaded image")
 
-    if fmt in {"jpeg", "jpg"}:
-        return "image/jpeg"
-    if fmt == "png":
-        return "image/png"
-    if fmt == "webp":
-        return "image/webp"
-    raise HTTPException(status_code=400, detail="Only JPEG, PNG, or WebP images are supported")
+
+def _validate_upload_metadata(file: UploadFile) -> None:
+    content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
+    if content_type and content_type not in {"image/jpeg", "image/png", "image/webp"}:
+        raise HTTPException(status_code=415, detail="Only JPEG, PNG, or WebP uploads are accepted")
+    filename = (file.filename or "").lower()
+    if filename and not filename.endswith((".jpg", ".jpeg", ".png", ".webp")):
+        raise HTTPException(status_code=415, detail="Only JPEG, PNG, or WebP uploads are accepted")
 
 
 def _upload_image_to_supabase(contents: bytes, content_type: str) -> str:
@@ -147,8 +214,9 @@ async def submit_low_confidence_feedback(
 ):
     try:
         user_id = await run_in_threadpool(require_authenticated_user, request)
+        _validate_upload_metadata(file)
         contents = await file.read()
-        content_type = _validate_image(contents)
+        contents, content_type = _sanitize_image(contents)
         confidence_value = parse_confidence_value(confidence)
         image_url = await run_in_threadpool(
             _upload_image_to_supabase, contents, content_type
@@ -173,7 +241,7 @@ async def submit_low_confidence_feedback(
         raise
     except Exception as e:
         print(f"❌ /ai-feedback/low-confidence error: {e}")
-        raise HTTPException(status_code=500, detail="Could not save feedback")
+        raise HTTPException(status_code=500, detail=_supabase_feedback_error_detail(e))
 
 
 @router.post("/predict")
@@ -191,8 +259,9 @@ async def predict(
         if not selected_plant:
             raise HTTPException(status_code=400, detail="selected_plant is required")
 
+        _validate_upload_metadata(file)
         contents = await file.read()
-        content_type = _validate_image(contents)
+        contents, content_type = _sanitize_image(contents)
 
         print(
             "🚀 Đang gửi yêu cầu sang Hugging Face cho cây:"

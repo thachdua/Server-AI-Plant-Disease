@@ -22,7 +22,11 @@ create table if not exists public.plant_resources (
   resource_type text not null check (resource_type in ('article','report','youtube')),
   source_name text,
   summary text,
-  language text not null default 'vi'
+  language text not null default 'vi',
+  image_url text,
+  category text not null default 'article',
+  duration_label text,
+  is_featured boolean not null default false
 );
 
 create table if not exists public.bookmarks (
@@ -34,6 +38,7 @@ create table if not exists public.bookmarks (
 );
 
 create index if not exists plant_resources_plant_key_idx on public.plant_resources (plant_key, created_at desc);
+create unique index if not exists plant_resources_url_unique_idx on public.plant_resources (url);
 create index if not exists bookmarks_created_by_idx on public.bookmarks (created_by, created_at desc);
 
 alter table public.plant_knowledge enable row level security;
@@ -75,11 +80,20 @@ on conflict (plant_key) do update set
   related_plant_keys = excluded.related_plant_keys,
   updated_at = now();
 
-insert into public.plant_resources (plant_key, title, url, resource_type, source_name, summary)
+insert into public.plant_resources (plant_key, title, url, resource_type, source_name, summary, image_url, category, duration_label, is_featured)
 values
-  ('tomato','Quản lý bệnh hại cà chua an toàn','https://extension.umn.edu/vegetables/growing-tomatoes-home-gardens','article','University of Minnesota Extension','Tổng quan chăm sóc và phòng bệnh cà chua.'),
-  ('rice','Rice Knowledge Bank','https://www.knowledgebank.irri.org/','report','IRRI','Tài liệu kỹ thuật về canh tác và sâu bệnh lúa.'),
-  ('rose','Rose care basics','https://www.rhs.org.uk/plants/roses/growing-guide','article','RHS','Hướng dẫn chăm sóc hoa hồng.'),
-  ('coffee','Coffee leaf rust overview','https://www.cabi.org/isc/datasheet/26182','report','CABI','Thông tin tham khảo về bệnh gỉ sắt cà phê.'),
-  ('tomato','Tomato care video search','https://www.youtube.com/results?search_query=tomato+disease+management+extension','youtube','YouTube','Danh sách video hướng dẫn chăm sóc và quản lý bệnh cà chua.')
-on conflict do nothing;
+  ('tomato','Quản lý bệnh hại cà chua an toàn','https://extension.umn.edu/vegetables/growing-tomatoes-home-gardens','article','University of Minnesota Extension','Tổng quan chăm sóc và phòng bệnh cà chua.','https://images.unsplash.com/photo-1591857177580-dc82b9ac4e1e?auto=format&fit=crop&w=1200&q=80','guide','6 phút đọc',true),
+  ('rice','Rice Knowledge Bank','https://www.knowledgebank.irri.org/','report','IRRI','Tài liệu kỹ thuật về canh tác và sâu bệnh lúa.','https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1200&q=80','report','Tài liệu',false),
+  ('rose','Rose care basics','https://www.rhs.org.uk/plants/roses/growing-guide','article','RHS','Hướng dẫn chăm sóc hoa hồng.','https://images.unsplash.com/photo-1496062031456-07b8f162a322?auto=format&fit=crop&w=1200&q=80','guide','5 phút đọc',false),
+  ('coffee','Coffee leaf rust overview','https://www.cabi.org/isc/datasheet/26182','report','CABI','Thông tin tham khảo về bệnh gỉ sắt cà phê.','https://images.unsplash.com/photo-1447933601403-0c6688de566e?auto=format&fit=crop&w=1200&q=80','report','Báo cáo',false),
+  ('tomato','Tomato care video search','https://www.youtube.com/results?search_query=tomato+disease+management+extension','youtube','YouTube','Danh sách video hướng dẫn chăm sóc và quản lý bệnh cà chua.','https://images.unsplash.com/photo-1416879595882-3373a0480b5b?auto=format&fit=crop&w=1200&q=80','youtube','Video',true)
+on conflict (url) do update set
+  plant_key = excluded.plant_key,
+  title = excluded.title,
+  resource_type = excluded.resource_type,
+  source_name = excluded.source_name,
+  summary = excluded.summary,
+  image_url = excluded.image_url,
+  category = excluded.category,
+  duration_label = excluded.duration_label,
+  is_featured = excluded.is_featured;

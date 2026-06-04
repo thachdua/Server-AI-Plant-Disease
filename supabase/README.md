@@ -32,7 +32,7 @@ Bạn chọn **1** trong 2 hướng:
 - Expert được xem và cập nhật workflow/review/reply.
 - Nếu bạn từng chạy bản cũ của `004_reports_and_consultations.sql`, hãy chạy thêm `sql/010_harden_workflow_updates.sql` để chặn user thường PATCH các trường workflow/expert từ custom client.
 
-## Feature migrations 011-016
+## Feature migrations 011-019
 Chạy theo đúng thứ tự sau sau khi đã có `profiles`, `report_cases`, `consultation_requests` và helper `public.is_expert`:
 
 1. `sql/011_ai_feedback_cases.sql`: dữ liệu retrain cho dự đoán sai/độ tin cậy thấp.
@@ -41,3 +41,6 @@ Chạy theo đúng thứ tự sau sau khi đã có `profiles`, `report_cases`, `
 4. `sql/014_care_plants_tasks.sql`: bộ sưu tập cây, care plan, task/checklist.
 5. `sql/015_plant_knowledge_resources.sql`: knowledge/resources/bookmark.
 6. `sql/016_consultation_workflow.sql`: consent, questionnaire, SLA và preference thông báo cho tư vấn chuyên gia.
+7. `sql/017_storage_plant_images.sql`: Storage bucket `plant-images` để lưu ảnh chẩn đoán/history/retrain.
+8. `sql/018_discover_resource_media.sql`: thêm ảnh/thumbnail, category và seed nội dung cho tab Khám phá.
+9. `sql/019_discover_in_app_content.sql`: thêm loại tài liệu mới, nội dung đọc trong app và thay link nguồn bị lỗi.

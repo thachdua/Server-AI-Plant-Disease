@@ -34,7 +34,7 @@ def outbreaks(
         return {"status": "success", "items": cached}
 
     q = supabase.table("outbreak_cases").select(
-        "id,lat,lng,disease,severity,reported_at,note,source"
+        "id,lat,lng,plant,disease,confidence,image_url,history_id,severity,reported_at,note,source"
     )
     if disease:
         q = q.ilike("disease", disease)
@@ -119,9 +119,9 @@ def outbreak_areas(
             - timedelta(days=since_days)
         ).isoformat()
 
-    q = supabase.table("outbreak_cases").select("lat,lng,disease,severity,reported_at").gte(
-        "reported_at", since_iso
-    )
+    q = supabase.table("outbreak_cases").select(
+        "id,lat,lng,plant,disease,confidence,image_url,history_id,severity,reported_at,note,source"
+    ).gte("reported_at", since_iso)
     if disease:
         q = q.ilike("disease", disease)
     if min_severity is not None:
@@ -138,6 +138,7 @@ def outbreak_areas(
         count7d = 0
         max_sev = 0
         disease_counts = {}
+        recent_cases = []
         for pt in points:
             try:
                 lat = float(pt.get("lat"))
@@ -154,11 +155,28 @@ def outbreak_areas(
                 d = (pt.get("disease") or "").strip()
                 if d:
                     disease_counts[d] = disease_counts.get(d, 0) + 1
+                recent_cases.append(
+                    {
+                        "id": str(pt.get("id") or ""),
+                        "lat": lat,
+                        "lng": lng,
+                        "plant": pt.get("plant"),
+                        "disease": pt.get("disease") or "",
+                        "confidence": pt.get("confidence"),
+                        "image_url": pt.get("image_url"),
+                        "history_id": pt.get("history_id"),
+                        "severity": sev,
+                        "reported_at": pt.get("reported_at"),
+                        "note": pt.get("note"),
+                        "source": pt.get("source"),
+                    }
+                )
 
         top_disease = None
         if disease_counts:
             top_disease = sorted(disease_counts.items(), key=lambda kv: kv[1], reverse=True)[0][0]
 
+        recent_cases.sort(key=lambda item: item.get("reported_at") or "", reverse=True)
         level_value = compute_level(count7d, max_sev)
         out_items.append(
             {
@@ -171,6 +189,7 @@ def outbreak_areas(
                 "bbox": a.get("bbox"),
                 "type": a.get("type"),
                 "coordinates": a.get("coordinates"),
+                "recent_cases": recent_cases[:5],
             }
         )
 

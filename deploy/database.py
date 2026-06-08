@@ -43,6 +43,7 @@ def save_to_db(plant_name, disease_name, confidence, image_url, created_by=None)
             INSERT INTO history
                 (plant_name, disease_name, confidence, image_url, created_at, created_by)
             VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING id
             """
             cur.execute(
                 query,
@@ -55,17 +56,62 @@ def save_to_db(plant_name, disease_name, confidence, image_url, created_by=None)
                     created_by,
                 ),
             )
+            row = cur.fetchone()
+            history_id = str(row[0]) if row else None
     except errors.UndefinedColumn:
         with _db_cursor(commit=True) as (_, cur):
             query = """
             INSERT INTO history (plant_name, disease_name, confidence, image_url, created_at)
             VALUES (%s, %s, %s, %s, %s)
+            RETURNING id
             """
             cur.execute(
                 query,
                 (plant_name, disease_name, confidence, image_url, _now_utc()),
             )
+            row = cur.fetchone()
+            history_id = str(row[0]) if row else None
     print("✅ Đã lưu lịch sử vào Supabase")
+    return history_id
+
+
+def save_outbreak_case(
+    *,
+    lat: float,
+    lng: float,
+    plant: str | None,
+    disease: str,
+    confidence: float | None,
+    image_url: str | None,
+    history_id: str | None,
+    created_by: str | None,
+) -> str | None:
+    with _db_cursor(commit=True) as (_, cur):
+        cur.execute(
+            """
+            INSERT INTO outbreak_cases
+                (
+                    lat, lng, plant, disease, confidence, image_url, history_id,
+                    created_by, severity, reported_at, note, source, review_status
+                )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s, 'history_save', 'auto_accepted')
+            RETURNING id
+            """,
+            (
+                lat,
+                lng,
+                plant,
+                disease,
+                confidence,
+                image_url,
+                history_id,
+                created_by,
+                _now_utc(),
+                "Tự động tạo từ lịch sử chẩn đoán. Cấp vùng dịch được tính theo số ca ghi nhận.",
+            ),
+        )
+        row = cur.fetchone()
+        return str(row[0]) if row else None
 
 
 def llm_cache_get(kind: str, input_hash: str, lang: str = "vi"):

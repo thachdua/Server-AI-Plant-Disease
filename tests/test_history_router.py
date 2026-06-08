@@ -17,10 +17,11 @@ class HistoryRouterTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch("deploy.routers.history.require_authenticated_user", return_value="user-1"):
-            with patch("deploy.routers.history.save_to_db") as save_to_db:
-                response = await save_history(req, Mock())
+            with patch("deploy.routers.history.save_to_db", return_value="history-1") as save_to_db:
+                with patch("deploy.routers.history.save_outbreak_case") as save_outbreak_case:
+                    response = await save_history(req, Mock())
 
-        self.assertEqual(response, {"status": "success"})
+        self.assertEqual(response, {"status": "success", "outbreak_saved": False})
         save_to_db.assert_called_once_with(
             "Tomato",
             "Late blight",
@@ -28,6 +29,70 @@ class HistoryRouterTests(unittest.IsolatedAsyncioTestCase):
             "https://example.com/image.jpg",
             "user-1",
         )
+        save_outbreak_case.assert_not_called()
+
+    async def test_save_history_creates_outbreak_for_confident_unhealthy_diagnosis_with_location(self):
+        req = SaveHistoryRequest(
+            plant="Tomato",
+            disease="Late blight",
+            confidence=60.0,
+            image_url="https://example.com/image.jpg",
+            lat=16.0471,
+            lng=108.2068,
+        )
+
+        with patch("deploy.routers.history.require_authenticated_user", return_value="user-1"):
+            with patch("deploy.routers.history.save_to_db", return_value="history-1"):
+                with patch("deploy.routers.history.save_outbreak_case", return_value="outbreak-1") as save_outbreak_case:
+                    response = await save_history(req, Mock())
+
+        self.assertEqual(response, {"status": "success", "outbreak_saved": True})
+        save_outbreak_case.assert_called_once_with(
+            lat=16.0471,
+            lng=108.2068,
+            plant="Tomato",
+            disease="Late blight",
+            confidence=60.0,
+            image_url="https://example.com/image.jpg",
+            history_id="history-1",
+            created_by="user-1",
+        )
+
+    async def test_save_history_skips_outbreak_below_confidence_threshold(self):
+        req = SaveHistoryRequest(
+            plant="Tomato",
+            disease="Late blight",
+            confidence=59.99,
+            image_url="https://example.com/image.jpg",
+            lat=16.0471,
+            lng=108.2068,
+        )
+
+        with patch("deploy.routers.history.require_authenticated_user", return_value="user-1"):
+            with patch("deploy.routers.history.save_to_db", return_value="history-1"):
+                with patch("deploy.routers.history.save_outbreak_case") as save_outbreak_case:
+                    response = await save_history(req, Mock())
+
+        self.assertEqual(response, {"status": "success", "outbreak_saved": False})
+        save_outbreak_case.assert_not_called()
+
+    async def test_save_history_skips_outbreak_for_healthy_diagnosis(self):
+        req = SaveHistoryRequest(
+            plant="Tomato",
+            disease="Healthy",
+            confidence=98.0,
+            image_url="https://example.com/image.jpg",
+            lat=16.0471,
+            lng=108.2068,
+        )
+
+        with patch("deploy.routers.history.require_authenticated_user", return_value="user-1"):
+            with patch("deploy.routers.history.save_to_db", return_value="history-1"):
+                with patch("deploy.routers.history.save_outbreak_case") as save_outbreak_case:
+                    response = await save_history(req, Mock())
+
+        self.assertEqual(response, {"status": "success", "outbreak_saved": False})
+        save_outbreak_case.assert_not_called()
 
     async def test_save_history_reports_database_failure(self):
         req = SaveHistoryRequest(

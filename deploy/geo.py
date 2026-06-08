@@ -44,13 +44,14 @@ def point_in_multipolygon(lng: float, lat: float, coords) -> bool:
     return False
 
 
-def compute_level(count7d: int, max_sev: int | None) -> int:
-    max_sev = max_sev or 0
-    if count7d > 10 or max_sev >= 5:
+def compute_level(count7d: int, max_sev: int | None = None) -> int:
+    # Province outbreak level is based on case volume in the selected time window.
+    # max_sev is kept for backwards-compatible callers, but does not affect level.
+    if count7d > 10:
         return 4
-    if count7d >= 6 or max_sev >= 4:
+    if count7d >= 6:
         return 3
-    if count7d >= 3 or max_sev >= 3:
+    if count7d >= 3:
         return 2
     if count7d >= 1:
         return 1

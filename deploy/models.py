@@ -12,6 +12,8 @@ class SaveHistoryRequest(APIModel):
     disease: Optional[str] = Field(default=None, max_length=180)
     confidence: Optional[float] = None
     image_url: Optional[str] = Field(default=None, max_length=2000)
+    lat: Optional[float] = None
+    lng: Optional[float] = None
 
 
 class LLMAdviceDiagnosisRequest(APIModel):

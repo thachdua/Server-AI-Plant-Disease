@@ -14,6 +14,8 @@ class SaveHistoryRequest(APIModel):
     image_url: Optional[str] = Field(default=None, max_length=2000)
     lat: Optional[float] = None
     lng: Optional[float] = None
+    location_label: Optional[str] = Field(default=None, max_length=300)
+    province_name: Optional[str] = Field(default=None, max_length=120)
 
 
 class LLMAdviceDiagnosisRequest(APIModel):

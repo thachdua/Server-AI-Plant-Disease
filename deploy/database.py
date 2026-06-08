@@ -85,6 +85,8 @@ def save_outbreak_case(
     image_url: str | None,
     history_id: str | None,
     created_by: str | None,
+    location_label: str | None = None,
+    province_name: str | None = None,
 ) -> str | None:
     with _db_cursor(commit=True) as (_, cur):
         cur.execute(
@@ -92,9 +94,10 @@ def save_outbreak_case(
             INSERT INTO outbreak_cases
                 (
                     lat, lng, plant, disease, confidence, image_url, history_id,
-                    created_by, severity, reported_at, note, source, review_status
+                    created_by, location_label, province_name, severity, reported_at,
+                    note, source, review_status
                 )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s, 'history_save', 'auto_accepted')
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s, 'history_save', 'auto_accepted')
             RETURNING id
             """,
             (
@@ -106,6 +109,8 @@ def save_outbreak_case(
                 image_url,
                 history_id,
                 created_by,
+                location_label,
+                province_name,
                 _now_utc(),
                 "Tự động tạo từ lịch sử chẩn đoán. Cấp vùng dịch được tính theo số ca ghi nhận.",
             ),

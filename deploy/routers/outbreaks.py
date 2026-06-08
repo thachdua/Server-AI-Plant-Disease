@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -17,6 +19,82 @@ from deploy.validation import (
 router = APIRouter()
 
 
+PROVINCE_HINTS = [
+    {"id": "46", "name": "Huế", "bbox": [107.0, 15.9, 108.3, 17.0]},
+    {"id": "48", "name": "Đà Nẵng", "bbox": [107.75, 15.8, 108.35, 16.25]},
+    {"id": "49", "name": "Quảng Nam", "bbox": [107.2, 14.9, 108.75, 16.2]},
+    {"id": "51", "name": "Quảng Ngãi", "bbox": [108.2, 14.3, 109.2, 15.45]},
+]
+
+
+def _province_for_point(lat: float | None, lng: float | None) -> str | None:
+    if lat is None or lng is None:
+        return None
+    for province in PROVINCE_HINTS:
+        bbox = province["bbox"]
+        if bbox[0] <= lng <= bbox[2] and bbox[1] <= lat <= bbox[3]:
+            return province["name"]
+    return None
+
+
+def _location_label(item: dict, *, fallback_province: str | None = None) -> str:
+    label = (item.get("location_label") or "").strip()
+    if label:
+        return label
+    province = (item.get("province_name") or fallback_province or "").strip()
+    if province:
+        return f"{province}, Vietnam"
+    try:
+        lat = float(item.get("lat"))
+        lng = float(item.get("lng"))
+    except Exception:
+        return "Vietnam"
+    province = _province_for_point(lat, lng)
+    return f"{province}, Vietnam" if province else "Vietnam"
+
+
+def _short_user_id(user_id: str | None) -> str:
+    if not user_id:
+        return ""
+    return user_id[:8]
+
+
+def _source_display(item: dict, profiles: dict[str, dict]) -> str:
+    created_by = item.get("created_by")
+    profile = profiles.get(str(created_by)) if created_by else None
+    role = (profile or {}).get("role")
+    name = ((profile or {}).get("display_name") or "").strip()
+    if role == "expert":
+        return f"Chuyên gia: {name}" if name else f"Chuyên gia {_short_user_id(created_by)}"
+    if created_by:
+        return f"Người dùng: {name}" if name else f"Người dùng {_short_user_id(created_by)}"
+    return "Người dùng"
+
+
+def _profiles_for_items(items: list[dict]) -> dict[str, dict]:
+    ids = sorted({str(item.get("created_by")) for item in items if item.get("created_by")})
+    if not ids:
+        return {}
+    try:
+        resp = (
+            supabase.table("profiles")
+            .select("id,role,display_name")
+            .in_("id", ids)
+            .execute()
+        )
+    except Exception as exc:
+        print(f"⚠️ Không thể tải profile nguồn vùng dịch: {exc}")
+        return {}
+    return {str(row.get("id")): row for row in (resp.data or []) if row.get("id")}
+
+
+def _decorate_case(item: dict, profiles: dict[str, dict], *, fallback_province: str | None = None) -> dict:
+    out = dict(item)
+    out["location_label"] = _location_label(out, fallback_province=fallback_province)
+    out["source_display"] = _source_display(out, profiles)
+    return out
+
+
 @router.get("/outbreaks")
 def outbreaks(
     disease: Optional[str] = None,
@@ -34,7 +112,7 @@ def outbreaks(
         return {"status": "success", "items": cached}
 
     q = supabase.table("outbreak_cases").select(
-        "id,lat,lng,plant,disease,confidence,image_url,history_id,severity,reported_at,note,source"
+        "id,lat,lng,plant,disease,confidence,image_url,history_id,created_by,location_label,province_name,severity,reported_at,note,source"
     )
     if disease:
         q = q.ilike("disease", disease)
@@ -45,7 +123,9 @@ def outbreaks(
     q = q.order("reported_at", desc=True).limit(limit)
 
     resp = q.execute()
-    items = resp.data or []
+    raw_items = resp.data or []
+    profiles = _profiles_for_items(raw_items)
+    items = [_decorate_case(item, profiles) for item in raw_items]
     cache_set(cache_key, items, ttl_seconds=20)
     return {"status": "success", "items": items}
 
@@ -120,7 +200,7 @@ def outbreak_areas(
         ).isoformat()
 
     q = supabase.table("outbreak_cases").select(
-        "id,lat,lng,plant,disease,confidence,image_url,history_id,severity,reported_at,note,source"
+        "id,lat,lng,plant,disease,confidence,image_url,history_id,created_by,location_label,province_name,severity,reported_at,note,source"
     ).gte("reported_at", since_iso)
     if disease:
         q = q.ilike("disease", disease)
@@ -128,6 +208,7 @@ def outbreak_areas(
         q = q.gte("severity", min_severity)
     resp = q.execute()
     points = resp.data or []
+    profiles = _profiles_for_items(points)
 
     out_items = []
     for a in areas:
@@ -156,7 +237,8 @@ def outbreak_areas(
                 if d:
                     disease_counts[d] = disease_counts.get(d, 0) + 1
                 recent_cases.append(
-                    {
+                    _decorate_case(
+                        {
                         "id": str(pt.get("id") or ""),
                         "lat": lat,
                         "lng": lng,
@@ -169,7 +251,13 @@ def outbreak_areas(
                         "reported_at": pt.get("reported_at"),
                         "note": pt.get("note"),
                         "source": pt.get("source"),
-                    }
+                        "created_by": pt.get("created_by"),
+                        "location_label": pt.get("location_label"),
+                        "province_name": pt.get("province_name"),
+                    },
+                        profiles,
+                        fallback_province=a["name"],
+                    )
                 )
 
         top_disease = None

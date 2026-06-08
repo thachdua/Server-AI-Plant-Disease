@@ -46,3 +46,4 @@ Chạy theo đúng thứ tự sau sau khi đã có `profiles`, `report_cases`, `
 9. `sql/019_discover_in_app_content.sql`: thêm loại tài liệu mới, nội dung đọc trong app và thay link nguồn bị lỗi.
 10. `sql/020_history_owner_delete.sql`: cho phép user xoá lịch sử chẩn đoán của chính mình.
 11. `sql/021_outbreak_cases_diagnosis_links.sql`: liên kết ca chẩn đoán/history/ảnh vào dữ liệu vùng dịch.
+12. `sql/022_outbreak_cases_location_label.sql`: thêm địa danh dễ đọc cho chi tiết ca vùng dịch.

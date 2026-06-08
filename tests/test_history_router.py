@@ -39,6 +39,8 @@ class HistoryRouterTests(unittest.IsolatedAsyncioTestCase):
             image_url="https://example.com/image.jpg",
             lat=16.0471,
             lng=108.2068,
+            location_label="Hải Châu, Đà Nẵng, Vietnam",
+            province_name="Đà Nẵng",
         )
 
         with patch("deploy.routers.history.require_authenticated_user", return_value="user-1"):
@@ -56,6 +58,8 @@ class HistoryRouterTests(unittest.IsolatedAsyncioTestCase):
             image_url="https://example.com/image.jpg",
             history_id="history-1",
             created_by="user-1",
+            location_label="Hải Châu, Đà Nẵng, Vietnam",
+            province_name="Đà Nẵng",
         )
 
     async def test_save_history_skips_outbreak_below_confidence_threshold(self):

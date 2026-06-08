@@ -73,6 +73,8 @@ async def save_history(req: SaveHistoryRequest, request: Request):
                 image_url=req.image_url,
                 history_id=history_id,
                 created_by=created_by,
+                location_label=req.location_label,
+                province_name=req.province_name,
             )
             outbreak_saved = True
         except Exception as exc:

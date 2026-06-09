@@ -49,5 +49,6 @@ class LLMCarePlanDiagnosisRequest(APIModel):
     plant: Optional[str] = Field(default=None, max_length=120)
     disease: str = Field(min_length=1, max_length=180)
     confidence: Optional[float] = None
+    availability_mode: Optional[Literal["busy", "normal", "flexible"]] = "normal"
     user_note: Optional[str] = Field(default=None, max_length=1200)
     weather_snapshot: Optional[Dict[str, Any]] = None

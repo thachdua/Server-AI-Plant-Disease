@@ -251,6 +251,7 @@ async def llm_care_plan_diagnosis(req: LLMCarePlanDiagnosisRequest, request: Req
             "plant": req.plant,
             "disease": disease,
             "confidence": req.confidence,
+            "availability_mode": req.availability_mode or "normal",
             "user_note": req.user_note,
             "weather_snapshot": req.weather_snapshot,
             "lang": "vi",

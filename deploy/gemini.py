@@ -260,6 +260,168 @@ def validate_care_plan_json(plan: dict) -> dict:
     }
 
 
+def validate_care_metrics_json(metrics: dict) -> dict:
+    if not isinstance(metrics, dict):
+        raise HTTPException(status_code=502, detail="Care metrics output is not an object")
+
+    def float_or_none(value):
+        try:
+            if value is None or value == "":
+                return None
+            return float(value)
+        except Exception:
+            return None
+
+    water_ml = float_or_none(metrics.get("water_ml_per_day"))
+    if water_ml is not None:
+        water_ml = min(max(water_ml, 20), 3000)
+
+    cups = float_or_none(metrics.get("cup_count_per_day"))
+    if cups is None and water_ml is not None:
+        cups = water_ml / 250.0
+    if cups is not None:
+        cups = min(max(cups, 0.1), 12.0)
+
+    light_min = float_or_none(metrics.get("light_min_lux"))
+    light_max = float_or_none(metrics.get("light_max_lux"))
+    if light_min is None:
+        light_min = 250
+    if light_max is None:
+        light_max = max(light_min + 500, 1000)
+    light_min = min(max(light_min, 20), 5000)
+    light_max = min(max(light_max, light_min + 50), 8000)
+
+    status = str(metrics.get("light_status_vi") or "").strip()
+    allowed_status = {"Thiếu sáng", "Phù hợp", "Quá sáng", "Chưa đo"}
+    if status not in allowed_status:
+        status = "Chưa đo"
+
+    water_advice = str(metrics.get("water_advice_vi") or "").strip()
+    if not water_advice:
+        water_advice = "Tưới từ từ vào gốc, kiểm tra đất trước khi tưới và điều chỉnh nếu đất còn ướt."
+
+    light_advice = str(metrics.get("light_advice_vi") or "").strip()
+    if not light_advice:
+        light_advice = "Đo ánh sáng tại vị trí đặt cây và điều chỉnh dần để tránh sốc nắng."
+
+    return {
+        "water_ml_per_day": round(water_ml, 1) if water_ml is not None else None,
+        "cup_count_per_day": round(cups, 2) if cups is not None else None,
+        "water_advice_vi": water_advice[:700],
+        "light_min_lux": round(light_min),
+        "light_max_lux": round(light_max),
+        "light_status_vi": status,
+        "light_advice_vi": light_advice[:700],
+    }
+
+
+def care_metrics_fallback(
+    plant: str | None,
+    disease: str | None,
+    confidence: float | None = None,
+    pot_diameter_cm: float | None = None,
+    plant_height_cm: float | None = None,
+    measured_lux: float | None = None,
+) -> dict:
+    text = f"{plant or ''} {disease or ''}".lower()
+
+    def has_any(words):
+        return any(w in text for w in words)
+
+    plant_text = (plant or "").lower()
+    disease_text = (disease or "").lower()
+    disease_is_leaf_spot = has_any([
+        "bacterial", "vi khuẩn", "spot", "đốm", "blight", "cháy lá", "mold",
+        "mildew", "mốc", "nấm", "rot", "thối", "rust", "rỉ sắt"
+    ])
+    disease_is_wilt = has_any(["wilt", "héo", "nematode", "tuyến trùng"])
+
+    if any(w in plant_text for w in ["rice", "lúa", "corn", "ngô", "maize", "mía", "sugercane"]):
+        light_min, light_max = 1200, 3200
+    elif any(w in plant_text for w in [
+        "tomato", "cà chua", "pepper", "bell", "ớt", "potato", "khoai",
+        "grape", "nho", "watermelon", "dưa", "strawberry", "dâu", "rose", "hồng"
+    ]):
+        light_min, light_max = 800, 2200
+    elif any(w in plant_text for w in ["coffee", "cà phê", "blueberry", "việt quất"]):
+        light_min, light_max = 450, 1400
+    elif any(w in plant_text for w in ["cassava", "sắn", "soybean", "đậu"]):
+        light_min, light_max = 700, 1800
+    else:
+        light_min, light_max = 350, 1200
+
+    if disease_is_leaf_spot:
+        light_min = int(light_min * 1.05)
+        light_max = int(light_max * 0.95)
+
+    if measured_lux is None or measured_lux <= 0:
+        light_status = "Chưa đo"
+        light_advice = (
+            f"Khoảng tham khảo cho cây này là {light_min}-{light_max} lux. "
+            "Hãy đo tại đúng vị trí đặt cây để có đánh giá cụ thể hơn."
+        )
+    elif measured_lux < light_min:
+        light_status = "Thiếu sáng"
+        light_advice = (
+            f"Vị trí này thấp hơn khoảng {light_min}-{light_max} lux. "
+            "Tăng sáng từ từ, ưu tiên ánh sáng tán xạ để cây hồi phục tốt hơn."
+        )
+    elif measured_lux > light_max:
+        light_status = "Quá sáng"
+        light_advice = (
+            f"Vị trí này cao hơn khoảng {light_min}-{light_max} lux. "
+            "Giảm nắng gắt bằng rèm mỏng hoặc đặt cây lùi xa nguồn nắng trực tiếp."
+        )
+    else:
+        light_status = "Phù hợp"
+        light_advice = (
+            f"Vị trí này nằm trong khoảng {light_min}-{light_max} lux cho cây/bệnh hiện tại. "
+            "Giữ vị trí này và theo dõi lá non trong vài ngày."
+        )
+
+    water_ml = None
+    cups = None
+    if pot_diameter_cm and pot_diameter_cm > 0:
+        height_factor = min(max((plant_height_cm or 30) / 30.0, 0.7), 1.8)
+        base = pot_diameter_cm * pot_diameter_cm * 0.55 * height_factor
+        if any(w in plant_text for w in ["rice", "lúa"]):
+            base *= 1.25
+        if any(w in plant_text for w in ["cactus", "xương rồng", "succulent", "sen đá"]):
+            base *= 0.45
+        if disease_is_leaf_spot:
+            base *= 0.88
+        if disease_is_wilt:
+            base *= 0.95
+        water_ml = min(max(base, 60), 1800)
+        cups = water_ml / 250.0
+
+    if water_ml is None:
+        water_advice = "Nhập đường kính chậu và chiều cao cây để ước lượng ml/ngày. Khi cây bệnh, luôn kiểm tra đất trước khi tưới."
+    elif disease_is_leaf_spot:
+        water_advice = (
+            f"Tưới khoảng {water_ml:.0f} ml/ngày vào gốc, không tưới lên lá và tránh tưới chiều tối "
+            "để giảm ẩm kéo dài trên tán lá."
+        )
+    elif disease_is_wilt:
+        water_advice = (
+            f"Tưới khoảng {water_ml:.0f} ml/ngày, chia chậm quanh gốc và theo dõi cây héo do thiếu nước hay do bệnh rễ."
+        )
+    else:
+        water_advice = (
+            f"Tưới khoảng {water_ml:.0f} ml/ngày, điều chỉnh giảm nếu đất còn ướt hoặc tăng nhẹ nếu đất khô nhanh."
+        )
+
+    return {
+        "water_ml_per_day": round(water_ml, 1) if water_ml is not None else None,
+        "cup_count_per_day": round(cups, 2) if cups is not None else None,
+        "water_advice_vi": water_advice,
+        "light_min_lux": light_min,
+        "light_max_lux": light_max,
+        "light_status_vi": light_status,
+        "light_advice_vi": light_advice,
+    }
+
+
 def diagnosis_fallback_advice(
     plant: str | None, disease: str, confidence: float | None
 ) -> dict:

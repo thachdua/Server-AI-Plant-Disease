@@ -14,18 +14,26 @@ from deploy.database import llm_cache_get, llm_cache_upsert
 from deploy.gemini import (
     call_gemini_json,
     call_gemini_text,
+    care_metrics_fallback,
     diagnosis_fallback_advice,
     is_cache_expired,
     validate_advice_json,
+    validate_care_metrics_json,
     validate_care_plan_json,
 )
 from deploy.models import (
+    LLMCareMetricsRequest,
     LLMCarePlanDiagnosisRequest,
     LLMAdviceDiagnosisRequest,
     LLMAdviceWeatherRequest,
     LLMChatRequest,
 )
-from deploy.prompts import CARE_PLAN_SYSTEM_PROMPT, DIAGNOSIS_SYSTEM_PROMPT, WEATHER_SYSTEM_PROMPT
+from deploy.prompts import (
+    CARE_METRICS_SYSTEM_PROMPT,
+    CARE_PLAN_SYSTEM_PROMPT,
+    DIAGNOSIS_SYSTEM_PROMPT,
+    WEATHER_SYSTEM_PROMPT,
+)
 from deploy.rate_limit import check_rate_limit
 from deploy.utils import canonical_json, sha256
 from deploy.validation import validate_coordinates
@@ -289,4 +297,75 @@ async def llm_care_plan_diagnosis(req: LLMCarePlanDiagnosisRequest, request: Req
         raise
     except Exception as e:
         print(f"❌ /llm/care-plan/diagnosis error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/llm/care-metrics")
+async def llm_care_metrics(req: LLMCareMetricsRequest, request: Request):
+    try:
+        check_rate_limit(request, "llm", LLM_RATE_LIMIT_PER_MINUTE)
+
+        pot = round(req.pot_diameter_cm, 1) if req.pot_diameter_cm is not None else None
+        height = round(req.plant_height_cm, 1) if req.plant_height_cm is not None else None
+        lux = round(req.measured_lux / 10) * 10 if req.measured_lux is not None else None
+        confidence = round(req.confidence, 2) if req.confidence is not None else None
+
+        payload = {
+            "plant": req.plant,
+            "disease": req.disease,
+            "confidence": confidence,
+            "pot_diameter_cm": pot,
+            "plant_height_cm": height,
+            "measured_lux": lux,
+            "lang": "vi",
+        }
+        input_hash = sha256(canonical_json(payload))
+        cached = await run_in_threadpool(llm_cache_get, "care_metrics", input_hash, "vi")
+        if cached and not is_cache_expired("diagnosis", cached.get("updated_at")):
+            return {
+                "status": "success",
+                "cached": True,
+                "model": cached.get("model"),
+                "metrics": cached.get("content_json"),
+            }
+
+        try:
+            raw = await run_in_threadpool(call_gemini_json, CARE_METRICS_SYSTEM_PROMPT, payload)
+            metrics = validate_care_metrics_json(raw)
+            await run_in_threadpool(
+                llm_cache_upsert,
+                "care_metrics",
+                input_hash,
+                "vi",
+                GEMINI_MODEL,
+                metrics,
+                metrics.get("water_advice_vi") or metrics.get("light_advice_vi"),
+            )
+            return {
+                "status": "success",
+                "cached": False,
+                "model": GEMINI_MODEL,
+                "metrics": metrics,
+            }
+        except Exception as e:
+            print(f"⚠️ /llm/care-metrics fallback: {e}")
+            metrics = care_metrics_fallback(
+                req.plant,
+                req.disease,
+                req.confidence,
+                req.pot_diameter_cm,
+                req.plant_height_cm,
+                req.measured_lux,
+            )
+            return {
+                "status": "success",
+                "cached": False,
+                "fallback": True,
+                "model": "fallback",
+                "metrics": metrics,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ /llm/care-metrics error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

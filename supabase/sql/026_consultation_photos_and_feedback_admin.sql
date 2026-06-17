@@ -1,5 +1,3 @@
--- Expert consultation photos and admin feedback management.
-
 alter table public.consultation_requests
   add column if not exists photo_urls text[] not null default '{}',
   add column if not exists primary_photo_url text,

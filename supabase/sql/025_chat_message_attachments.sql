@@ -1,6 +1,3 @@
--- Optional image attachments for saved chatbot conversations.
--- Existing RLS on chat_messages stays unchanged because ownership still flows through session_id/created_by.
-
 alter table public.chat_messages
   add column if not exists image_url text,
   add column if not exists attachment_type text,

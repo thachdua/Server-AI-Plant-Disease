@@ -21,7 +21,7 @@ class HistoryRouterTests(unittest.IsolatedAsyncioTestCase):
                 with patch("deploy.routers.history.save_outbreak_case") as save_outbreak_case:
                     response = await save_history(req, Mock())
 
-        self.assertEqual(response, {"status": "success", "outbreak_saved": False})
+        self.assertEqual(response, {"status": "success", "outbreak_saved": False, "history_id": "history-1"})
         save_to_db.assert_called_once_with(
             "Tomato",
             "Late blight",
@@ -48,7 +48,7 @@ class HistoryRouterTests(unittest.IsolatedAsyncioTestCase):
                 with patch("deploy.routers.history.save_outbreak_case", return_value="outbreak-1") as save_outbreak_case:
                     response = await save_history(req, Mock())
 
-        self.assertEqual(response, {"status": "success", "outbreak_saved": True})
+        self.assertEqual(response, {"status": "success", "outbreak_saved": True, "history_id": "history-1"})
         save_outbreak_case.assert_called_once_with(
             lat=16.0471,
             lng=108.2068,
@@ -77,7 +77,7 @@ class HistoryRouterTests(unittest.IsolatedAsyncioTestCase):
                 with patch("deploy.routers.history.save_outbreak_case") as save_outbreak_case:
                     response = await save_history(req, Mock())
 
-        self.assertEqual(response, {"status": "success", "outbreak_saved": False})
+        self.assertEqual(response, {"status": "success", "outbreak_saved": False, "history_id": "history-1"})
         save_outbreak_case.assert_not_called()
 
     async def test_save_history_skips_outbreak_for_healthy_diagnosis(self):
@@ -95,7 +95,7 @@ class HistoryRouterTests(unittest.IsolatedAsyncioTestCase):
                 with patch("deploy.routers.history.save_outbreak_case") as save_outbreak_case:
                     response = await save_history(req, Mock())
 
-        self.assertEqual(response, {"status": "success", "outbreak_saved": False})
+        self.assertEqual(response, {"status": "success", "outbreak_saved": False, "history_id": "history-1"})
         save_outbreak_case.assert_not_called()
 
     async def test_save_history_reports_database_failure(self):

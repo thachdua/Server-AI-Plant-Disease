@@ -18,11 +18,13 @@ JSON_ENDPOINTS = {
     "/llm/advice/diagnosis",
     "/llm/advice/weather",
     "/llm/care-plan/diagnosis",
+    "/llm/care-metrics",
 }
 
 MULTIPART_ENDPOINTS = {
     "/predict",
     "/ai-feedback/low-confidence",
+    "/consultations/expert-request",
 }
 
 

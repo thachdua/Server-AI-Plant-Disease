@@ -80,4 +80,4 @@ async def save_history(req: SaveHistoryRequest, request: Request):
         except Exception as exc:
             print(f"⚠️ Không thể tạo outbreak case từ history: {exc}")
 
-    return {"status": "success", "outbreak_saved": outbreak_saved}
+    return {"status": "success", "outbreak_saved": outbreak_saved, "history_id": history_id}

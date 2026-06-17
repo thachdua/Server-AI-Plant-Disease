@@ -8,7 +8,6 @@ from fastapi import HTTPException
 from deploy.config import (
     GEMINI_API_KEYS,
     GEMINI_API_VERSION,
-    GEMINI_CHAT_MODEL,
     GEMINI_FALLBACK_MODELS,
     GEMINI_MODEL,
 )

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from deploy.routers import auth_pages, health, history, llm, outbreaks, predict, weather
+from deploy.routers import auth_pages, consultations, health, history, llm, outbreaks, predict, weather
 from deploy.security import security_middleware
 
 app = FastAPI(title="Plant Disease Detector API")
@@ -27,6 +27,7 @@ app.include_router(auth_pages.router)
 app.include_router(health.router)
 app.include_router(predict.router)
 app.include_router(history.router)
+app.include_router(consultations.router)
 app.include_router(outbreaks.router)
 app.include_router(llm.router)
 app.include_router(weather.router)

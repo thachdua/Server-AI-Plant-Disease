@@ -275,21 +275,30 @@ async def llm_care_plan_diagnosis(req: LLMCarePlanDiagnosisRequest, request: Req
                 "summary_vi": cached.get("content_text"),
             }
 
-        raw = await run_in_threadpool(call_gemini_json, CARE_PLAN_SYSTEM_PROMPT, payload)
+        fallback = False
+        try:
+            raw = await run_in_threadpool(call_gemini_json, CARE_PLAN_SYSTEM_PROMPT, payload)
+        except HTTPException as e:
+            if e.status_code < 500:
+                raise
+            fallback = True
+            raw = {}
         care_plan = validate_care_plan_json(raw)
-        await run_in_threadpool(
-            llm_cache_upsert,
-            "care_plan",
-            input_hash,
-            "vi",
-            GEMINI_MODEL,
-            care_plan,
-            care_plan.get("summary_vi"),
-        )
+        if not fallback:
+            await run_in_threadpool(
+                llm_cache_upsert,
+                "care_plan",
+                input_hash,
+                "vi",
+                GEMINI_MODEL,
+                care_plan,
+                care_plan.get("summary_vi"),
+            )
         return {
             "status": "success",
             "cached": False,
-            "model": GEMINI_MODEL,
+            "fallback": fallback,
+            "model": "local-fallback" if fallback else GEMINI_MODEL,
             "care_plan": care_plan,
             "summary_vi": care_plan.get("summary_vi"),
         }

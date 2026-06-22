@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from deploy.main import app
@@ -74,6 +75,32 @@ class LLMCarePlanTests(unittest.TestCase):
         body = response.json()
         self.assertEqual(body["care_plan"]["tasks"][0]["category"], "watering")
         self.assertEqual(body["care_plan"]["checklist"], ["Cắt lá bệnh"])
+
+    def test_care_plan_endpoint_falls_back_when_gemini_json_invalid(self):
+        with patch("deploy.routers.llm.llm_cache_get", return_value=None):
+            with patch("deploy.routers.llm.llm_cache_upsert") as upsert:
+                with patch(
+                    "deploy.routers.llm.call_gemini_json",
+                    side_effect=HTTPException(
+                        status_code=502,
+                        detail="Gemini returned invalid JSON",
+                    ),
+                ):
+                    response = self.client.post(
+                        "/llm/care-plan/diagnosis",
+                        json={
+                            "plant": "Bell pepper",
+                            "disease": "Bacterial spot",
+                            "confidence": 72,
+                        },
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["fallback"])
+        self.assertEqual(body["model"], "local-fallback")
+        self.assertGreaterEqual(len(body["care_plan"]["tasks"]), 1)
+        upsert.assert_not_called()
 
 
 if __name__ == "__main__":

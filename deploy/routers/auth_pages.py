@@ -82,11 +82,14 @@ def password_recovery_page():
       var link = document.getElementById("openApp");
       var status = document.getElementById("status");
       var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+      if (!isIOS) {
+        link.style.display = "none";
+        status.textContent = "Vui lòng mở email đặt lại mật khẩu trên iPhone đã cài ứng dụng Plant Disease Detector. Máy tính không thể mở trực tiếp màn đặt mật khẩu trong app.";
+        return;
+      }
       link.href = appUrl;
       if (isIOS && (payload.indexOf("access_token=") >= 0 || payload.indexOf("error=") >= 0)) {
         setTimeout(function () { window.location.href = appUrl; }, 250);
-      } else if (!isIOS) {
-        status.textContent = "Vui lòng mở email đặt lại mật khẩu trên iPhone đã cài ứng dụng, hoặc bấm nút mở ứng dụng nếu đang dùng iPhone.";
       } else {
         status.textContent = "Liên kết đặt lại mật khẩu chưa có phiên hợp lệ. Hãy mở lại email reset mới nhất hoặc yêu cầu gửi lại email.";
       }

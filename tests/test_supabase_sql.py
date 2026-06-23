@@ -46,12 +46,34 @@ class SupabaseSQLTests(unittest.TestCase):
             "014_care_plants_tasks.sql": "care_tasks",
             "015_plant_knowledge_resources.sql": "plant_resources",
             "016_consultation_workflow.sql": "expected_reply_at",
+            "032_care_task_events.sql": "care_task_events",
+            "033_plant_clinic_public_cases.sql": "clinic_public_cases",
         }
         for filename, marker in expected.items():
             sql = (ROOT / f"supabase/sql/{filename}").read_text()
             self.assertIn(marker, sql)
             if filename != "016_consultation_workflow.sql":
                 self.assertIn("enable row level security", sql.lower())
+
+    def test_clinic_public_cases_do_not_store_private_contact_fields(self):
+        sql = (ROOT / "supabase/sql/033_plant_clinic_public_cases.sql").read_text().lower()
+        table_sql = sql.split(");", 1)[0]
+
+        self.assertNotIn("user_email", table_sql)
+        self.assertNotIn("contact_phone", table_sql)
+        self.assertNotIn("profile_snapshot", table_sql)
+        self.assertIn("clinic_public_cases_read_published", sql)
+        self.assertIn("public.is_expert(auth.uid())", sql)
+
+    def test_profiles_password_storage_hardening_drops_unsafe_columns(self):
+        sql = (ROOT / "supabase/sql/034_profiles_password_storage_hardening.sql").read_text().lower()
+
+        for column in ["password", "current_password", "raw_password", "plain_password", "password_hash"]:
+            self.assertIn(f"'{column}'", sql)
+        self.assertIn("drop column", sql)
+        self.assertIn("supabase auth", sql)
+        self.assertIn("has_password_login", sql)
+        self.assertIn("password_enabled_at", sql)
 
 
 if __name__ == "__main__":

@@ -74,7 +74,7 @@ Backend hỗ trợ cấu hình:
 - `LLM_CHAT_MAX_CHARS=4000`: giới hạn tổng độ dài hội thoại gửi sang Gemini.
 - `WEATHER_RATE_LIMIT_PER_MINUTE=60`: giới hạn request thời tiết theo IP.
 
-Khi nộp/demo public, nên bật `PREDICT_REQUIRE_AUTH=true` nếu không cần chế độ khách scan.
+Khi triển khai public, nên bật `PREDICT_REQUIRE_AUTH=true` nếu không cần chế độ khách scan.
 
 Middleware backend cũng chặn `Content-Type` sai (`application/json` cho LLM/history, `multipart/form-data` cho upload ảnh), chặn path bất thường, thêm security headers, và re-encode ảnh upload thành JPEG sạch trước khi gửi sang Hugging Face/Supabase để loại metadata/payload lạ.
 
@@ -83,7 +83,7 @@ Middleware backend cũng chặn `Content-Type` sai (`application/json` cho LLM/h
 - `GET /health`: kiểm tra backend còn sống, không phụ thuộc dịch vụ ngoài.
 - `GET /health/ready`: kiểm tra cấu hình bắt buộc như Supabase/Postgres/Hugging Face URL. Endpoint này không trả secret.
 
-Trên Render có thể dùng `/health` cho uptime check. Trước khi demo, mở `/health/ready` để xem còn thiếu biến môi trường nào không.
+Trên Render có thể dùng `/health` cho uptime check. Trước khi chạy bản public, mở `/health/ready` để xem còn thiếu biến môi trường nào không.
 
 ## Input validation
 

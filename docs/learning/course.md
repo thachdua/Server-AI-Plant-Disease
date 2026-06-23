@@ -652,7 +652,7 @@ Xem `docs/learning/quiz.md`, Module 9.
 
 ### Tính năng giải quyết vấn đề gì
 
-Khi app demo/public, hệ thống phải tránh spam, payload lạ, request sai, lỗi service ngoài, và cần có test chứng minh chức năng ổn định.
+Khi app chạy public, hệ thống phải tránh spam, payload lạ, request sai, lỗi service ngoài, và cần có test chứng minh chức năng ổn định.
 
 ### Luồng kiểm tra hệ thống
 
@@ -702,4 +702,3 @@ Xem `docs/learning/quiz.md`, Module 10.
 3. Gửi câu trả lời cho giảng viên.
 4. Giảng viên sẽ chấm, giải thích đáp án, rồi mới chuyển sang Module 2.
 5. Lặp lại đến Module 10.
-

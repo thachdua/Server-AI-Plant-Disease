@@ -1,4 +1,4 @@
--- Add media metadata for Discover resources and seed image-backed demo content.
+-- Add media metadata for Discover resources and seed image-backed content.
 
 alter table public.plant_resources
   add column if not exists image_url text,

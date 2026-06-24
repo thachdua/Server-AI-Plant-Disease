@@ -49,12 +49,21 @@ class SupabaseSQLTests(unittest.TestCase):
             "032_care_task_events.sql": "care_task_events",
             "033_plant_clinic_public_cases.sql": "clinic_public_cases",
             "035_clinic_smart_care_followup.sql": "expert_verdict",
+            "036_scanner_image_quality_metadata.sql": "quality_json",
         }
         for filename, marker in expected.items():
             sql = (ROOT / f"supabase/sql/{filename}").read_text()
             self.assertIn(marker, sql)
-            if filename not in {"016_consultation_workflow.sql", "035_clinic_smart_care_followup.sql"}:
+            if filename not in {"016_consultation_workflow.sql", "035_clinic_smart_care_followup.sql", "036_scanner_image_quality_metadata.sql"}:
                 self.assertIn("enable row level security", sql.lower())
+
+    def test_scanner_image_quality_metadata_columns(self):
+        sql = (ROOT / "supabase/sql/036_scanner_image_quality_metadata.sql").read_text().lower()
+
+        self.assertIn("public.ai_feedback_cases", sql)
+        self.assertIn("public.report_cases", sql)
+        self.assertIn("quality_json jsonb", sql)
+        self.assertIn("client_flow_version text", sql)
 
     def test_clinic_smart_care_followup_constraints_include_expert_sources(self):
         sql = (ROOT / "supabase/sql/035_clinic_smart_care_followup.sql").read_text().lower()

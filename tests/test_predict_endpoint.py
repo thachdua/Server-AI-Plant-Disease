@@ -151,6 +151,71 @@ class PredictEndpointTests(unittest.TestCase):
         self.assertEqual(payload["reason"], "low_confidence")
         self.assertEqual(payload["confidence"], 65.0)
 
+    def test_predict_low_confidence_logs_client_quality_metadata(self):
+        hf_response = Mock()
+        hf_response.status_code = 200
+        hf_response.json.return_value = {
+            "status": "success",
+            "plant": "Tomato",
+            "disease": "Tomato___Late_blight",
+            "confidence": 0.65,
+        }
+        table = Mock()
+        table.insert.return_value = Mock()
+        fake_supabase = Mock()
+        fake_supabase.table.return_value = table
+
+        with patch("deploy.routers.predict.requests.post", return_value=hf_response):
+            with patch("deploy.routers.predict.optional_authenticated_user", return_value="user-1"):
+                with patch("deploy.routers.predict.print"):
+                    with patch(
+                        "deploy.routers.predict._upload_image_to_supabase",
+                        return_value="https://example.com/predictions/image.jpg",
+                    ):
+                        with patch("deploy.routers.predict.supabase", fake_supabase):
+                            response = self.client.post(
+                                "/predict",
+                                data={
+                                    "selected_plant": "Tomato",
+                                    "client_flow_version": "scanner_v2",
+                                    "client_quality_json": '{"score":72,"warnings":["Ảnh hơi tối"]}',
+                                },
+                                files={"file": ("leaf.jpg", jpeg_bytes(), "image/jpeg")},
+                            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = table.insert.call_args.args[0]
+        self.assertEqual(payload["client_flow_version"], "scanner_v2")
+        self.assertEqual(payload["quality_json"]["score"], 72)
+
+    def test_predict_ignores_invalid_client_quality_metadata(self):
+        hf_response = Mock()
+        hf_response.status_code = 200
+        hf_response.json.return_value = {
+            "status": "success",
+            "plant": "Tomato",
+            "disease": "Tomato___Late_blight",
+            "confidence": 0.9234,
+        }
+
+        with patch("deploy.routers.predict.requests.post", return_value=hf_response):
+            with patch("deploy.routers.predict.print"):
+                with patch(
+                    "deploy.routers.predict._upload_image_to_supabase",
+                    return_value="https://example.com/predictions/image.jpg",
+                ):
+                    response = self.client.post(
+                        "/predict",
+                        data={
+                            "selected_plant": "Tomato",
+                            "client_quality_json": "{bad json",
+                        },
+                        files={"file": ("leaf.jpg", jpeg_bytes(), "image/jpeg")},
+                    )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "success")
+
     def test_low_confidence_feedback_endpoint_saves_after_consent(self):
         table = Mock()
         insert_result = Mock()
@@ -187,6 +252,35 @@ class PredictEndpointTests(unittest.TestCase):
         self.assertEqual(payload["confidence"], 1.0)
         self.assertEqual(payload["reason"], "low_confidence")
         self.assertEqual(payload["image_url"], "https://example.com/predictions/unclear.jpg")
+
+    def test_low_confidence_feedback_saves_client_quality_metadata(self):
+        table = Mock()
+        table.insert.return_value = Mock()
+        fake_supabase = Mock()
+        fake_supabase.table.return_value = table
+
+        with patch("deploy.routers.predict.require_authenticated_user", return_value="user-1"):
+            with patch("deploy.routers.predict.print"):
+                with patch(
+                    "deploy.routers.predict._upload_image_to_supabase",
+                    return_value="https://example.com/predictions/unclear.jpg",
+                ):
+                    with patch("deploy.routers.predict.supabase", fake_supabase):
+                        response = self.client.post(
+                            "/ai-feedback/low-confidence",
+                            data={
+                                "selected_plant": "Tomato",
+                                "confidence": "62%",
+                                "client_flow_version": "scanner_v2",
+                                "client_quality_json": '{"score":41,"minDimension":220}',
+                            },
+                            files={"file": ("leaf.jpg", jpeg_bytes(), "image/jpeg")},
+                        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = table.insert.call_args.args[0]
+        self.assertEqual(payload["client_flow_version"], "scanner_v2")
+        self.assertEqual(payload["quality_json"]["minDimension"], 220)
 
 
 if __name__ == "__main__":

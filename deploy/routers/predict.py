@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import warnings
 from typing import Optional
 from uuid import uuid4
@@ -175,6 +176,16 @@ def _upload_image_to_supabase(contents: bytes, content_type: str) -> str:
     return supabase.storage.from_("plant-images").get_public_url(file_name)
 
 
+def _parse_client_quality_json(raw: str | None) -> dict | None:
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def _log_low_confidence_case(
     *,
     user_id: str | None,
@@ -182,22 +193,27 @@ def _log_low_confidence_case(
     disease: str,
     confidence: float,
     image_url: str,
+    quality_json: dict | None = None,
+    client_flow_version: str | None = None,
 ) -> None:
     if not user_id or confidence >= PREDICT_LOW_CONFIDENCE_THRESHOLD:
         return
+    payload = {
+        "created_by": user_id,
+        "plant": plant,
+        "predicted_disease": disease,
+        "confidence": confidence,
+        "image_url": image_url,
+        "source": "predict",
+        "reason": "low_confidence",
+        "review_status": "pending",
+    }
+    if quality_json is not None:
+        payload["quality_json"] = quality_json
+    if client_flow_version:
+        payload["client_flow_version"] = client_flow_version.strip()
     try:
-        supabase.table("ai_feedback_cases").insert(
-            {
-                "created_by": user_id,
-                "plant": plant,
-                "predicted_disease": disease,
-                "confidence": confidence,
-                "image_url": image_url,
-                "source": "predict",
-                "reason": "low_confidence",
-                "review_status": "pending",
-            }
-        ).execute()
+        supabase.table("ai_feedback_cases").insert(payload).execute()
     except Exception as e:
         print(f"⚠️ low-confidence feedback log failed: {e}")
 
@@ -211,6 +227,8 @@ async def submit_low_confidence_feedback(
     predicted_disease: Optional[str] = Form(None),
     confidence: Optional[str] = Form(None),
     user_note: Optional[str] = Form(None),
+    client_quality_json: Optional[str] = Form(None),
+    client_flow_version: Optional[str] = Form(None),
 ):
     try:
         user_id = await run_in_threadpool(require_authenticated_user, request)
@@ -221,20 +239,25 @@ async def submit_low_confidence_feedback(
         image_url = await run_in_threadpool(
             _upload_image_to_supabase, contents, content_type
         )
+        quality_json = _parse_client_quality_json(client_quality_json)
 
-        supabase.table("ai_feedback_cases").insert(
-            {
-                "created_by": user_id,
-                "plant": (predicted_plant or selected_plant or "").strip() or None,
-                "predicted_disease": (predicted_disease or "").strip() or None,
-                "confidence": confidence_value,
-                "image_url": image_url,
-                "source": "predict",
-                "reason": "low_confidence",
-                "user_note": (user_note or "").strip() or None,
-                "review_status": "pending",
-            }
-        ).execute()
+        payload = {
+            "created_by": user_id,
+            "plant": (predicted_plant or selected_plant or "").strip() or None,
+            "predicted_disease": (predicted_disease or "").strip() or None,
+            "confidence": confidence_value,
+            "image_url": image_url,
+            "source": "predict",
+            "reason": "low_confidence",
+            "user_note": (user_note or "").strip() or None,
+            "review_status": "pending",
+        }
+        if quality_json is not None:
+            payload["quality_json"] = quality_json
+        if client_flow_version:
+            payload["client_flow_version"] = client_flow_version.strip()
+
+        supabase.table("ai_feedback_cases").insert(payload).execute()
 
         return {"status": "success", "image_url": image_url}
     except HTTPException:
@@ -246,7 +269,11 @@ async def submit_low_confidence_feedback(
 
 @router.post("/predict")
 async def predict(
-    request: Request, selected_plant: str = Form(...), file: UploadFile = File(...)
+    request: Request,
+    selected_plant: str = Form(...),
+    file: UploadFile = File(...),
+    client_quality_json: Optional[str] = Form(None),
+    client_flow_version: Optional[str] = Form(None),
 ):
     try:
         check_rate_limit(request, "predict", PREDICT_RATE_LIMIT_PER_MINUTE)
@@ -262,6 +289,7 @@ async def predict(
         _validate_upload_metadata(file)
         contents = await file.read()
         contents, content_type = _sanitize_image(contents)
+        quality_json = _parse_client_quality_json(client_quality_json)
 
         print(
             "🚀 Đang gửi yêu cầu sang Hugging Face cho cây:"
@@ -339,6 +367,8 @@ async def predict(
             disease=disease_name,
             confidence=confidence_value,
             image_url=image_url,
+            quality_json=quality_json,
+            client_flow_version=client_flow_version,
         )
 
         return {

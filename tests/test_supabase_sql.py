@@ -48,12 +48,22 @@ class SupabaseSQLTests(unittest.TestCase):
             "016_consultation_workflow.sql": "expected_reply_at",
             "032_care_task_events.sql": "care_task_events",
             "033_plant_clinic_public_cases.sql": "clinic_public_cases",
+            "035_clinic_smart_care_followup.sql": "expert_verdict",
         }
         for filename, marker in expected.items():
             sql = (ROOT / f"supabase/sql/{filename}").read_text()
             self.assertIn(marker, sql)
-            if filename != "016_consultation_workflow.sql":
+            if filename not in {"016_consultation_workflow.sql", "035_clinic_smart_care_followup.sql"}:
                 self.assertIn("enable row level security", sql.lower())
+
+    def test_clinic_smart_care_followup_constraints_include_expert_sources(self):
+        sql = (ROOT / "supabase/sql/035_clinic_smart_care_followup.sql").read_text().lower()
+
+        self.assertIn("plant_observations_type_check", sql)
+        self.assertIn("'expert_verdict'", sql)
+        self.assertIn("care_tasks_source_check", sql)
+        self.assertIn("'expert'", sql)
+        self.assertIn("'recovery'", sql)
 
     def test_clinic_public_cases_do_not_store_private_contact_fields(self):
         sql = (ROOT / "supabase/sql/033_plant_clinic_public_cases.sql").read_text().lower()

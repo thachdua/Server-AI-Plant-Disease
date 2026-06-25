@@ -77,6 +77,24 @@ class SupabaseSQLTests(unittest.TestCase):
         self.assertIn("foreign key (province_code) references public.provinces(code)", sql)
         self.assertIn("foreign key (ward_code) references public.wards(code)", sql)
 
+    def test_outbreak_map_filters_nearby_migration(self):
+        sql = (ROOT / "supabase/sql/038_outbreak_map_filters_nearby.sql").read_text().lower()
+
+        self.assertIn("outbreak_cases_plant_reported_idx", sql)
+        self.assertIn("outbreak_cases_source_reported_idx", sql)
+        self.assertIn("outbreak_cases_review_status_reported_idx", sql)
+        self.assertIn("outbreak_cases_geom_geography_gist_idx", sql)
+        self.assertIn("using gist ((geom::geography))", sql)
+
+    def test_outbreak_demo_seed_is_labeled_and_cleanupable(self):
+        sql = (ROOT / "supabase/sql/039_seed_outbreak_cases_demo.sql").read_text().lower()
+
+        self.assertIn("where source = 'demo_seed'", sql)
+        self.assertIn("'demo_seed'", sql)
+        self.assertIn("st_pointonsurface", sql)
+        self.assertIn("join public.gis_wards", sql)
+        self.assertIn("review_status", sql)
+
     def test_clinic_smart_care_followup_constraints_include_expert_sources(self):
         sql = (ROOT / "supabase/sql/035_clinic_smart_care_followup.sql").read_text().lower()
 

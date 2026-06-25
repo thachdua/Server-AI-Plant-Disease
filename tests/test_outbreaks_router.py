@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from deploy.cache import _cache
 from deploy.main import app
-from deploy.routers.outbreaks import _rows_to_areas
+from deploy.routers.outbreaks import _nearby_alerts, _rows_to_areas
 
 
 class OutbreakRouterTests(unittest.TestCase):
@@ -88,6 +88,74 @@ class OutbreakRouterTests(unittest.TestCase):
         self.assertEqual(area["centroid"], [105.5, 20.5])
         self.assertEqual(area["risk_level"], 4)
         self.assertEqual(area["recent_cases"][0]["location_label"], "Phường Ba Đình, Hà Nội, Vietnam")
+
+    def test_ward_id_selected_only_passes_to_area_query(self):
+        row = {
+            "area_id": "00070",
+            "name": "Hoàn Kiếm",
+            "full_name": "Phường Hoàn Kiếm",
+            "parent_id": "01",
+            "parent_name": "Hà Nội",
+            "province_id": "01",
+            "unit_type": "Phường",
+            "area_km2": 5.1,
+            "selected": True,
+            "geojson": None,
+            "bbox_geojson": {"type": "Polygon", "coordinates": [[[105.8, 21.0], [105.9, 21.0], [105.9, 21.1], [105.8, 21.0]]]},
+            "centroid_geojson": {"type": "Point", "coordinates": [105.85, 21.03]},
+            "case_count": 3,
+            "max_severity": 4,
+            "top_disease": "Rust",
+            "recent_cases": [],
+            "ward_count": 0,
+        }
+
+        with patch("deploy.routers.outbreaks._fetch_area_rows", return_value=[row]) as fetch:
+            response = self.client.get(
+                "/outbreaks/areas",
+                params={
+                    "level": "ward",
+                    "parent_id": "01",
+                    "ward_id": "00070",
+                    "selected_only": "true",
+                    "include_geometry": "false",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        item = response.json()["items"][0]
+        self.assertEqual(item["area_id"], "00070")
+        self.assertTrue(item["selected"])
+        self.assertIsNone(item["coordinates"])
+        self.assertEqual(item["unit_type"], "Phường")
+        self.assertEqual(fetch.call_args.kwargs["ward_id"], "00070")
+        self.assertTrue(fetch.call_args.kwargs["selected_only"])
+
+    def test_nearby_alerts_rank_matching_disease_and_plant(self):
+        cases = [
+            {
+                "id": "far",
+                "distance_km": 2.0,
+                "severity": 2,
+                "plant": "Corn",
+                "disease": "Rust",
+                "ward_name": "A",
+            },
+            {
+                "id": "match",
+                "distance_km": 3.0,
+                "severity": 4,
+                "plant": "Tomato",
+                "disease": "Late Blight",
+                "ward_name": "B",
+            },
+        ]
+
+        alerts = _nearby_alerts(cases, plant="Tomato", disease="Late Blight")
+
+        self.assertEqual(alerts[0]["id"], "match")
+        self.assertTrue(alerts[0]["same_plant"])
+        self.assertTrue(alerts[0]["same_disease"])
 
     def test_summary_applies_filters_and_aggregates(self):
         cases = [

@@ -44,11 +44,11 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(response.json()["detail"], "since_days must be between 1 and 3650")
 
     def test_outbreak_areas_accepts_ten_year_window_before_querying(self):
-        with patch("deploy.routers.outbreaks.requests.get") as get:
-            get.return_value.status_code = 502
+        with patch("deploy.routers.outbreaks._fetch_area_rows", return_value=[]) as fetch:
             response = self.client.get("/outbreaks/areas", params={"since_days": 3650})
 
-        self.assertNotEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 200)
+        fetch.assert_called_once()
 
     def test_llm_diagnosis_requires_disease(self):
         response = self.client.post(

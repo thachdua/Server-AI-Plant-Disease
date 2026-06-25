@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 import psycopg2
 from psycopg2 import errors
+from psycopg2.extras import RealDictCursor
 
 from deploy.config import DB_CONFIG
 
@@ -30,6 +31,13 @@ def _db_cursor(commit: bool = False):
         raise
     finally:
         conn.close()
+
+
+def fetch_dicts(query: str, params: tuple | list | None = None) -> list[dict]:
+    with _db_connect() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(query, params or ())
+            return [dict(row) for row in cur.fetchall()]
 
 
 def _now_utc():

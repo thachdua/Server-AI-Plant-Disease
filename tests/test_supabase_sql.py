@@ -65,6 +65,18 @@ class SupabaseSQLTests(unittest.TestCase):
         self.assertIn("quality_json jsonb", sql)
         self.assertIn("client_flow_version text", sql)
 
+    def test_vn_admin_gis_outbreak_map_migration(self):
+        sql = (ROOT / "supabase/sql/037_vn_admin_gis_outbreak_map.sql").read_text().lower()
+
+        self.assertIn("create extension if not exists postgis", sql)
+        self.assertIn("create table if not exists public.gis_provinces", sql)
+        self.assertIn("create table if not exists public.gis_wards", sql)
+        self.assertIn("using gist (geom)", sql)
+        self.assertIn("public.resolve_admin_for_point", sql)
+        self.assertIn("outbreak_cases_set_admin_fields_trigger", sql)
+        self.assertIn("foreign key (province_code) references public.provinces(code)", sql)
+        self.assertIn("foreign key (ward_code) references public.wards(code)", sql)
+
     def test_clinic_smart_care_followup_constraints_include_expert_sources(self):
         sql = (ROOT / "supabase/sql/035_clinic_smart_care_followup.sql").read_text().lower()
 

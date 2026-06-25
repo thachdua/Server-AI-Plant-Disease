@@ -56,3 +56,23 @@ def compute_level(count7d: int, max_sev: int | None = None) -> int:
     if count7d >= 1:
         return 1
     return 0
+
+
+def compute_risk_level(case_count: int, max_sev: int | None = None) -> int:
+    severity = max_sev or 0
+    if case_count >= 11 or severity >= 5:
+        return 4
+    if case_count >= 6 or severity >= 4:
+        return 3
+    if case_count >= 3:
+        return 2
+    if case_count >= 1:
+        return 1
+    return 0
+
+
+def compute_risk_score(case_count: int, max_sev: int | None = None) -> float:
+    severity = max(0, min(max_sev or 0, 5))
+    count_component = min(case_count, 20) / 20.0 * 70.0
+    severity_component = severity / 5.0 * 30.0
+    return round(count_component + severity_component, 2)

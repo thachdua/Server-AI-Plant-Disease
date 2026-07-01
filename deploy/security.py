@@ -24,6 +24,7 @@ JSON_ENDPOINTS = {
 
 MULTIPART_ENDPOINTS = {
     "/predict",
+    "/prediction-jobs",
     "/ai-feedback/low-confidence",
     "/consultations/expert-request",
 }

@@ -7,7 +7,7 @@ from typing import Optional
 from uuid import uuid4
 
 import requests
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Request, UploadFile
 from PIL import Image, UnidentifiedImageError
 from PIL.Image import DecompressionBombError, DecompressionBombWarning
 from starlette.concurrency import run_in_threadpool
@@ -218,6 +218,208 @@ def _log_low_confidence_case(
         print(f"⚠️ low-confidence feedback log failed: {e}")
 
 
+def _prediction_job_response(row: dict) -> dict:
+    status = row.get("status")
+    result = None
+    if status == "done":
+        confidence_text = row.get("confidence_text")
+        confidence = row.get("confidence")
+        if not confidence_text and isinstance(confidence, (int, float)):
+            confidence_text = f"{float(confidence):.2f}%"
+        is_unrecognized = (
+            isinstance(confidence, (int, float))
+            and float(confidence) < PREDICT_UNRECOGNIZED_THRESHOLD
+        )
+        result = {
+            "status": "unrecognized" if is_unrecognized else "success",
+            "message": UNRECOGNIZED_MESSAGE if is_unrecognized else None,
+            "plant": row.get("predicted_plant"),
+            "disease": row.get("predicted_disease"),
+            "confidence": confidence_text,
+            "image_url": row.get("result_image_url"),
+        }
+    return {
+        "job_id": row.get("id"),
+        "status": status,
+        "image_url": row.get("image_url"),
+        "error_message": row.get("error_message"),
+        "result": result,
+    }
+
+
+def _insert_prediction_job(row: dict) -> dict:
+    try:
+        result = supabase.table("prediction_jobs").insert(row).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=_supabase_feedback_error_detail(exc))
+    inserted = result.data[0] if getattr(result, "data", None) else row
+    if not inserted.get("id"):
+        raise HTTPException(status_code=500, detail="Prediction job was not created")
+    return inserted
+
+
+def _get_prediction_job(job_id: str) -> dict | None:
+    try:
+        result = (
+            supabase.table("prediction_jobs")
+            .select("*")
+            .eq("id", job_id)
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=_supabase_feedback_error_detail(exc))
+    rows = getattr(result, "data", None) or []
+    return rows[0] if rows else None
+
+
+def _update_prediction_job(job_id: str, payload: dict) -> None:
+    try:
+        (
+            supabase.table("prediction_jobs")
+            .update(payload)
+            .eq("id", job_id)
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=_supabase_feedback_error_detail(exc))
+
+
+def _download_prediction_image(image_url: str) -> tuple[bytes, str]:
+    try:
+        response = requests.get(image_url, timeout=30)
+        response.raise_for_status()
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="Could not download prediction image")
+    return _sanitize_image(response.content)
+
+
+def _call_hugging_face(contents: bytes, content_type: str, selected_plant: str, filename: str = "image.jpg") -> dict:
+    try:
+        response = requests.post(
+            HF_API_URL,
+            files={"file": (filename, contents, content_type)},
+            data={"selected_plant": selected_plant},
+            timeout=120,
+        )
+    except requests.Timeout:
+        raise HTTPException(status_code=504, detail="Hugging Face request timed out")
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="Could not reach Hugging Face")
+
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail="Hugging Face không phản hồi hoặc đang bận",
+        )
+
+    try:
+        result = response.json()
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Hugging Face returned invalid JSON")
+
+    if result.get("status") == "error":
+        raise HTTPException(
+            status_code=502,
+            detail=result.get("message") or "Prediction service returned an error",
+        )
+    return result
+
+
+def _normalize_prediction_result(result: dict, selected_plant: str) -> dict:
+    disease_name = result.get("disease")
+    if not isinstance(disease_name, str) or not disease_name.strip():
+        raise HTTPException(
+            status_code=502,
+            detail="Prediction service returned incomplete result",
+        )
+    disease_name = disease_name.strip()
+
+    predicted_plant = (
+        result.get("plant")
+        or infer_plant_from_disease_label(disease_name)
+        or selected_plant
+    )
+
+    confidence_value = parse_confidence_value(result.get("confidence"))
+    if confidence_value is None:
+        raise HTTPException(
+            status_code=502,
+            detail="Prediction service returned invalid confidence",
+        )
+
+    return {
+        "predicted_plant": predicted_plant,
+        "predicted_disease": disease_name,
+        "confidence": confidence_value,
+        "confidence_text": f"{confidence_value:.2f}%",
+    }
+
+
+def process_prediction_job(job_id: str) -> None:
+    try:
+        job = _get_prediction_job(job_id)
+        if not job:
+            return
+        if job.get("status") not in {"pending", "processing"}:
+            return
+
+        _update_prediction_job(job_id, {"status": "processing", "error_message": None})
+        image_url = job.get("image_url")
+        selected_plant = (job.get("selected_plant") or "").strip()
+        if not image_url or not selected_plant:
+            raise HTTPException(status_code=400, detail="Prediction job is missing image or plant")
+
+        contents, content_type = _download_prediction_image(image_url)
+        raw_result = _call_hugging_face(contents, content_type, selected_plant)
+        normalized = _normalize_prediction_result(raw_result, selected_plant)
+        confidence = normalized["confidence"]
+        result_image_url = None if confidence < PREDICT_UNRECOGNIZED_THRESHOLD else image_url
+
+        _update_prediction_job(
+            job_id,
+            {
+                "status": "done",
+                "predicted_plant": normalized["predicted_plant"],
+                "predicted_disease": normalized["predicted_disease"],
+                "confidence": confidence,
+                "confidence_text": normalized["confidence_text"],
+                "result_image_url": result_image_url,
+                "error_message": None,
+            },
+        )
+
+        if result_image_url:
+            _log_low_confidence_case(
+                user_id=job.get("created_by"),
+                plant=normalized["predicted_plant"],
+                disease=normalized["predicted_disease"],
+                confidence=confidence,
+                image_url=result_image_url,
+                quality_json=None,
+                client_flow_version="prediction_job_v1",
+            )
+    except HTTPException as exc:
+        _update_prediction_job(
+            job_id,
+            {
+                "status": "failed",
+                "error_message": str(exc.detail),
+            },
+        )
+    except Exception as exc:
+        print(f"❌ prediction job {job_id} failed: {exc}")
+        try:
+            _update_prediction_job(
+                job_id,
+                {
+                    "status": "failed",
+                    "error_message": "Prediction failed",
+                },
+            )
+        except Exception:
+            pass
+
+
 @router.post("/ai-feedback/low-confidence")
 async def submit_low_confidence_feedback(
     request: Request,
@@ -265,6 +467,74 @@ async def submit_low_confidence_feedback(
     except Exception as e:
         print(f"❌ /ai-feedback/low-confidence error: {e}")
         raise HTTPException(status_code=500, detail=_supabase_feedback_error_detail(e))
+
+
+@router.post("/prediction-jobs")
+async def create_prediction_job(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    selected_plant: str = Form(...),
+    file: UploadFile = File(...),
+):
+    check_rate_limit(request, "prediction_jobs", PREDICT_RATE_LIMIT_PER_MINUTE)
+    auth_func = (
+        require_authenticated_user if PREDICT_REQUIRE_AUTH else optional_authenticated_user
+    )
+    user_id = await run_in_threadpool(auth_func, request)
+
+    selected_plant = selected_plant.strip()
+    if not selected_plant:
+        raise HTTPException(status_code=400, detail="selected_plant is required")
+
+    _validate_upload_metadata(file)
+    contents = await file.read()
+    contents, content_type = _sanitize_image(contents)
+    image_url = await run_in_threadpool(_upload_image_to_supabase, contents, content_type)
+
+    row = {
+        "created_by": user_id,
+        "selected_plant": selected_plant,
+        "image_url": image_url,
+        "status": "pending",
+        "source": "ios",
+    }
+    inserted = await run_in_threadpool(_insert_prediction_job, row)
+    job_id = inserted["id"]
+    background_tasks.add_task(process_prediction_job, job_id)
+    return {"status": "accepted", "job_id": job_id, "image_url": image_url}
+
+
+@router.get("/prediction-jobs/{job_id}")
+async def get_prediction_job(job_id: str, request: Request):
+    job = await run_in_threadpool(_get_prediction_job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Prediction job not found")
+
+    owner = job.get("created_by")
+    if owner:
+        user_id = await run_in_threadpool(require_authenticated_user, request)
+        if user_id != owner:
+            raise HTTPException(status_code=403, detail="You cannot access this prediction job")
+
+    return _prediction_job_response(job)
+
+
+@router.post("/prediction-jobs/{job_id}/process")
+async def process_prediction_job_endpoint(job_id: str, request: Request):
+    check_rate_limit(request, "prediction_jobs_process", PREDICT_RATE_LIMIT_PER_MINUTE)
+    job = await run_in_threadpool(_get_prediction_job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Prediction job not found")
+
+    owner = job.get("created_by")
+    if owner:
+        user_id = await run_in_threadpool(require_authenticated_user, request)
+        if user_id != owner:
+            raise HTTPException(status_code=403, detail="You cannot access this prediction job")
+
+    await run_in_threadpool(process_prediction_job, job_id)
+    refreshed = await run_in_threadpool(_get_prediction_job, job_id)
+    return _prediction_job_response(refreshed or job)
 
 
 @router.post("/predict")

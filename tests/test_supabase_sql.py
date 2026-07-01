@@ -50,6 +50,7 @@ class SupabaseSQLTests(unittest.TestCase):
             "033_plant_clinic_public_cases.sql": "clinic_public_cases",
             "035_clinic_smart_care_followup.sql": "expert_verdict",
             "036_scanner_image_quality_metadata.sql": "quality_json",
+            "041_prediction_jobs.sql": "prediction_jobs",
         }
         for filename, marker in expected.items():
             sql = (ROOT / f"supabase/sql/{filename}").read_text()
@@ -111,6 +112,15 @@ class SupabaseSQLTests(unittest.TestCase):
         self.assertIn("created_by = auth.uid()", sql)
         self.assertIn('create policy "history_owner_delete"', sql)
         self.assertIn("revoke select, insert, update, delete on table public.history from anon", sql)
+
+    def test_prediction_jobs_migration_owner_select_and_statuses(self):
+        sql = (ROOT / "supabase/sql/041_prediction_jobs.sql").read_text().lower()
+
+        self.assertIn("create table if not exists public.prediction_jobs", sql)
+        for status in ["'pending'", "'processing'", "'done'", "'failed'"]:
+            self.assertIn(status, sql)
+        self.assertIn("created_by = auth.uid()", sql)
+        self.assertIn("revoke insert, update, delete on table public.prediction_jobs from anon, authenticated", sql)
 
     def test_clinic_public_cases_do_not_store_private_contact_fields(self):
         sql = (ROOT / "supabase/sql/033_plant_clinic_public_cases.sql").read_text().lower()

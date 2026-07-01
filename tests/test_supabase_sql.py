@@ -104,6 +104,14 @@ class SupabaseSQLTests(unittest.TestCase):
         self.assertIn("'expert'", sql)
         self.assertIn("'recovery'", sql)
 
+    def test_history_owner_delete_grants_authenticated_privileges(self):
+        sql = (ROOT / "supabase/sql/040_history_owner_delete_grants.sql").read_text().lower()
+
+        self.assertIn("grant select, delete on table public.history to authenticated", sql)
+        self.assertIn("created_by = auth.uid()", sql)
+        self.assertIn('create policy "history_owner_delete"', sql)
+        self.assertIn("revoke select, insert, update, delete on table public.history from anon", sql)
+
     def test_clinic_public_cases_do_not_store_private_contact_fields(self):
         sql = (ROOT / "supabase/sql/033_plant_clinic_public_cases.sql").read_text().lower()
         table_sql = sql.split(");", 1)[0]

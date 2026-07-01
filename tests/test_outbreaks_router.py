@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from deploy.cache import _cache
 from deploy.main import app
-from deploy.routers.outbreaks import _nearby_alerts, _rows_to_areas
+from deploy.routers.outbreaks import _nearby_alerts, _nearby_recommendation_summary, _rows_to_areas
 
 
 class OutbreakRouterTests(unittest.TestCase):
@@ -156,6 +156,46 @@ class OutbreakRouterTests(unittest.TestCase):
         self.assertEqual(alerts[0]["id"], "match")
         self.assertTrue(alerts[0]["same_plant"])
         self.assertTrue(alerts[0]["same_disease"])
+        self.assertNotIn("recommended_action", alerts[0])
+        self.assertEqual(alerts[0]["urgency"], "urgent")
+        self.assertGreater(alerts[0]["recommendation_score"], alerts[1]["recommendation_score"])
+        self.assertIn("trùng bệnh đang theo dõi", alerts[0]["explain_reasons"])
+        self.assertTrue(alerts[0]["next_steps"])
+
+    def test_nearby_recommendations_deduplicate_group_actions(self):
+        alerts = _nearby_alerts(
+            [
+                {
+                    "id": "a",
+                    "distance_km": 2.0,
+                    "severity": 4,
+                    "plant": "Tomato",
+                    "disease": "Powdery Mildew",
+                    "ward_name": "A",
+                },
+                {
+                    "id": "b",
+                    "distance_km": 4.0,
+                    "severity": 3,
+                    "plant": "Tomato",
+                    "disease": "Downy Mildew",
+                    "ward_name": "B",
+                },
+            ],
+            plant="Tomato",
+            disease="Powdery Mildew",
+        )
+
+        summary = _nearby_recommendation_summary(alerts)
+        action_ids = [item["id"] for item in summary["recommended_actions"]]
+
+        self.assertEqual(action_ids.count("fungal-humidity-check"), 1)
+        self.assertIn("high-risk-24h", action_ids)
+        self.assertIn("very-near-radius", action_ids)
+        self.assertEqual(summary["risk_context"]["matched_plant_count"], 2)
+        self.assertGreaterEqual(summary["risk_context"]["matched_disease_count"], 1)
+        self.assertEqual(summary["urgency"], "urgent")
+        self.assertTrue(summary["next_steps"])
 
     def test_summary_applies_filters_and_aggregates(self):
         cases = [

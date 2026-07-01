@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any, Optional
@@ -848,7 +849,18 @@ def outbreak_filter_options(
 
 
 def _normalized_text(value: str | None) -> str:
-    return str(value or "").strip().lower()
+    text = str(value or "").strip().lower()
+    text = unicodedata.normalize("NFD", text)
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+
+
+def _disease_group(value: str | None) -> str:
+    text = _normalized_text(value)
+    if any(term in text for term in ("bacterial", "vi khuan", "chay la", "dom la", "spot", "blight vi khuan")):
+        return "bacterial"
+    if any(term in text for term in ("fung", "nam", "mildew", "suong mai", "phan trang", "rust", "ri sat", "blight")):
+        return "fungal"
+    return "general"
 
 
 def _nearby_alerts(cases: list[dict], *, plant: str | None, disease: str | None) -> list[dict]:
@@ -861,20 +873,58 @@ def _nearby_alerts(cases: list[dict], *, plant: str | None, disease: str | None)
         same_plant = bool(plant_key and plant_key in _normalized_text(item.get("plant")))
         same_disease = bool(disease_key and disease_key in _normalized_text(item.get("disease")))
         risk_level = compute_risk_level(1, severity)
-        score = (6 - min(distance, 5)) + severity * 1.8 + (4 if same_disease else 0) + (2 if same_plant else 0)
+        is_urgent = (risk_level >= 3 or severity >= 4) and distance <= 10
+        is_relevant = same_disease or same_plant
+        is_nearby = distance <= 5
+        if is_urgent:
+            urgency = "urgent"
+        elif is_relevant:
+            urgency = "relevant"
+        elif is_nearby:
+            urgency = "nearby"
+        else:
+            urgency = "watch"
+        score = (
+            (6 - min(distance, 5))
+            + severity * 1.8
+            + risk_level * 1.5
+            + (8 if is_urgent else 0)
+            + (4 if same_disease else 0)
+            + (2 if same_plant else 0)
+            + (2 if is_nearby else 0)
+        )
         title = item.get("ward_name") or item.get("province_name") or "Khu vực gần bạn"
         disease_name = item.get("disease") or "bệnh cây"
         plant_name = item.get("plant")
         match_text = "trùng bệnh đang theo dõi" if same_disease else ("trùng cây của bạn" if same_plant else "gần vị trí của bạn")
+        reasons = [f"cách {distance:.1f} km", f"mức {severity}"]
+        if same_disease:
+            reasons.append("trùng bệnh đang theo dõi")
+        if same_plant:
+            reasons.append("trùng cây của bạn")
+        if risk_level >= 3:
+            reasons.append(f"nguy cơ vùng cấp {risk_level}")
+        next_steps = []
+        if urgency == "urgent":
+            next_steps.append("Kiểm tra cây trong hôm nay và ưu tiên cây có triệu chứng lan nhanh.")
+        if _disease_group(disease_name) == "fungal":
+            next_steps.append("Giảm ẩm tán cây, tránh tưới phun lên lá và kiểm tra mặt dưới lá.")
+        elif _disease_group(disease_name) == "bacterial":
+            next_steps.append("Cách ly lá bệnh, vệ sinh dụng cụ và hạn chế nước bắn.")
+        else:
+            next_steps.append("Theo dõi lá non, thân và chụp ảnh lại nếu vết bệnh lan thêm.")
         alerts.append(
             {
                 "id": item.get("id"),
                 "title": f"{title}: {disease_name}",
                 "message": f"Cách khoảng {distance:.1f} km, mức {severity}; {match_text}.",
-                "recommended_action": "Kiểm tra lá non, mặt dưới lá và giảm ẩm tán cây trong 24-48 giờ tới.",
                 "severity": severity,
                 "risk_level": risk_level,
                 "risk_score": round(score * 10, 1),
+                "recommendation_score": round(score * 10, 1),
+                "urgency": urgency,
+                "explain_reasons": reasons,
+                "next_steps": next_steps[:3],
                 "distance_km": round(distance, 2),
                 "plant": plant_name,
                 "disease": disease_name,
@@ -887,6 +937,153 @@ def _nearby_alerts(cases: list[dict], *, plant: str | None, disease: str | None)
             }
         )
     return sorted(alerts, key=lambda item: (-item["risk_score"], item["distance_km"]))[:8]
+
+
+def _nearby_recommendation_summary(alerts: list[dict]) -> dict:
+    if not alerts:
+        return {
+            "summary_title": "Chưa thấy vùng dịch gần bạn",
+            "summary_message": "Tiếp tục theo dõi cây và bật vị trí khi cần kiểm tra nguy cơ quanh khu vực trồng.",
+            "recommended_actions": [],
+            "risk_context": {
+                "highest_risk_level": 0,
+                "high_risk_count": 0,
+                "matched_disease_count": 0,
+                "matched_plant_count": 0,
+            },
+        }
+
+    actions: dict[str, dict] = {}
+
+    def add_action(
+        action_id: str,
+        title: str,
+        detail: str,
+        priority: int,
+        reason: str,
+        disease_group: str = "general",
+        plant_group: str | None = None,
+    ) -> None:
+        existing = actions.get(action_id)
+        item = {
+            "id": action_id,
+            "title": title,
+            "detail": detail,
+            "priority": max(1, min(priority, 5)),
+            "reason": reason,
+            "disease_group": disease_group,
+            "plant_group": plant_group,
+        }
+        if existing is None or item["priority"] < existing["priority"]:
+            actions[action_id] = item
+
+    highest_risk = max(int(item.get("risk_level") or 0) for item in alerts)
+    high_risk_count = sum(1 for item in alerts if int(item.get("risk_level") or 0) >= 3)
+    matched_disease_count = sum(1 for item in alerts if item.get("same_disease"))
+    matched_plant_count = sum(1 for item in alerts if item.get("same_plant"))
+    nearest = min(float(item.get("distance_km") or 0) for item in alerts)
+
+    for alert in alerts:
+        severity = int(alert.get("severity") or 0)
+        risk_level = int(alert.get("risk_level") or 0)
+        distance = float(alert.get("distance_km") or 0)
+        same_disease = bool(alert.get("same_disease"))
+        same_plant = bool(alert.get("same_plant"))
+        group = _disease_group(alert.get("disease"))
+        priority = 3
+        if severity >= 4 or risk_level >= 3:
+            priority = 1
+        elif distance <= 5 or same_disease or same_plant:
+            priority = 2
+
+        if group == "fungal":
+            add_action(
+                "fungal-humidity-check",
+                "Giảm ẩm và kiểm tra mặt dưới lá",
+                "Tránh tưới phun lên lá, tăng thông thoáng tán cây và kiểm tra lá non/mặt dưới lá trong 24-48 giờ tới.",
+                priority,
+                "Có nhóm bệnh nấm/sương mai/phấn trắng/rỉ sắt xuất hiện quanh vị trí của bạn.",
+                "fungal",
+                alert.get("plant"),
+            )
+        elif group == "bacterial":
+            add_action(
+                "bacterial-isolation-cleanup",
+                "Cách ly lá bệnh và vệ sinh dụng cụ",
+                "Loại bỏ lá bệnh nặng, khử trùng kéo/dụng cụ và hạn chế nước bắn từ cây bệnh sang cây khỏe.",
+                priority,
+                "Có nhóm bệnh vi khuẩn/đốm lá/cháy lá xuất hiện quanh vị trí của bạn.",
+                "bacterial",
+                alert.get("plant"),
+            )
+        else:
+            add_action(
+                "general-monitoring",
+                "Theo dõi triệu chứng trong khu vực gần",
+                "Quan sát lá non, thân và mặt dưới lá; chụp ảnh lại nếu vết bệnh lan nhanh hoặc cây suy yếu.",
+                priority,
+                "Có ca bệnh cây gần vị trí của bạn.",
+                "general",
+                alert.get("plant"),
+            )
+
+        if severity >= 4 or risk_level >= 3:
+            add_action(
+                "high-risk-24h",
+                "Ưu tiên kiểm tra trong 24 giờ",
+                "Xem lại cây đang trồng gần vị trí này trong hôm nay, đặc biệt cây có dấu hiệu vàng lá, đốm lá hoặc héo nhanh.",
+                1,
+                "Có vùng nguy cơ cao hoặc ca mức nặng gần bạn.",
+                group,
+                alert.get("plant"),
+            )
+        if distance <= 5:
+            add_action(
+                "very-near-radius",
+                "Tăng cảnh giác với cây trong bán kính 5 km",
+                "Giữ vệ sinh khu vực trồng, tránh dùng chung dụng cụ chưa khử trùng và theo dõi cây nhạy cảm sát hơn.",
+                1 if severity >= 3 else 2,
+                "Có ca bệnh rất gần vị trí hiện tại.",
+                group,
+                alert.get("plant"),
+            )
+        if same_disease or same_plant:
+            add_action(
+                "matched-plant-disease",
+                "Ưu tiên cây đang theo dõi",
+                "So sánh triệu chứng hiện tại với cây đã lưu/chẩn đoán và mở bộ lọc cùng cây/bệnh để xem vùng liên quan.",
+                1 if same_disease else 2,
+                "Vùng gần có ca trùng cây hoặc trùng bệnh đang theo dõi.",
+                group,
+                alert.get("plant"),
+            )
+
+    sorted_actions = sorted(actions.values(), key=lambda item: (item["priority"], item["id"]))[:5]
+    if high_risk_count:
+        title = f"{high_risk_count} vùng nguy cơ cao gần bạn"
+    elif nearest <= 5:
+        title = "Có vùng dịch rất gần bạn"
+    else:
+        title = "Có vùng dịch trong bán kính theo dõi"
+    message = (
+        f"Gần nhất khoảng {nearest:.1f} km; ưu tiên theo khoảng cách, mức bệnh "
+        f"và cây/bệnh đang theo dõi."
+    )
+    return {
+        "summary_title": title,
+        "summary_message": message,
+        "recommended_actions": sorted_actions,
+        "recommendation_score": max(float(item.get("recommendation_score") or item.get("risk_score") or 0) for item in alerts),
+        "urgency": "urgent" if any(item.get("urgency") == "urgent" for item in alerts) else sorted(alerts, key=lambda item: -float(item.get("recommendation_score") or 0))[0].get("urgency", "watch"),
+        "explain_reasons": list(dict.fromkeys(reason for item in alerts for reason in item.get("explain_reasons", [])))[:5],
+        "next_steps": [item["detail"] for item in sorted_actions[:2]],
+        "risk_context": {
+            "highest_risk_level": highest_risk,
+            "high_risk_count": high_risk_count,
+            "matched_disease_count": matched_disease_count,
+            "matched_plant_count": matched_plant_count,
+        },
+    }
 
 
 @router.get("/outbreaks/nearby-advice")
@@ -930,8 +1127,9 @@ def nearby_advice(
             near_lng=lng,
             radius_km=radius_km,
             limit=80,
-        )
+    )
     alerts = _nearby_alerts(cases, plant=plant, disease=disease)
+    advice_summary = _nearby_recommendation_summary(alerts)
     nearest = min((float(item.get("distance_km") or 0) for item in cases), default=None)
     out = {
         "status": "success",
@@ -939,6 +1137,7 @@ def nearby_advice(
         "matched_case_count": len(cases),
         "nearest_distance_km": round(nearest, 2) if nearest is not None else None,
         "alerts": alerts,
+        **advice_summary,
         "recommended_filters": {
             "plant": plant,
             "disease": disease,

@@ -14,6 +14,7 @@ from deploy.rate_limit import check_rate_limit
 
 JSON_ENDPOINTS = {
     "/history/save",
+    "/consultations/expert-request-from-url",
     "/llm/chat",
     "/llm/advice/diagnosis",
     "/llm/advice/weather",
